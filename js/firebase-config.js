@@ -1,15 +1,13 @@
 // =====================================================
 // FIREBASE CONFIG - Edmilson Treinador
-// Substitua pelos dados do SEU projeto Firebase
 // =====================================================
 
 export const firebaseConfig = {
-  apiKey: "SUA_API_KEY",
-  authDomain: "SEU_PROJECT_ID.firebaseapp.com",
-  projectId: "SEU_PROJECT_ID",
-  storageBucket: "SEU_PROJECT_ID.appspot.com",
-  messagingSenderId: "SEU_SENDER_ID",
-  appId: "SEU_APP_ID"
+  apiKey: "AIzaSyCbC-jlsA6jATFmeIJO2uC71sYsDMDpDww",
+  authDomain: "edmilson-treinador.firebaseapp.com",
+  projectId: "edmilson-treinador",
+  storageBucket: "edmilson-treinador.firebasestorage.app",
+  messagingSenderId: "160290308926",
+  appId: "1:160290308926:web:d71ea364142ac4124d226f",
+  measurementId: "G-8RF5R26RH8"
 };
-
-// Inicialização será feita em app.js após carregar o SDK
