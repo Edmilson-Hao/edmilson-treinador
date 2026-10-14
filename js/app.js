@@ -1,0 +1,1105 @@
+// =====================================================
+// APP PRINCIPAL - Edmilson Treinador
+// =====================================================
+
+import { firebaseConfig } from './firebase-config.js';
+import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEmail, logout, createStudentAccount } from './shared/auth.js';
+import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, createExercise, updateExercise, getRoutinesOfStudent, createRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, createPlan, getPlansOfStudent, markPlanPaid } from './shared/db.js';
+import { $, $$, el, toast, formatDate, formatDateTime, initials, driveToEmbed, confirmDialog, generateInviteCode } from './shared/utils.js';
+
+// Estado global
+const state = {
+  user: null,
+  profile: null,
+  view: 'splash',
+  currentStudent: null,
+  currentRoutine: null,
+  currentWorkout: null
+};
+
+// ---------- BOOT ----------
+async function boot() {
+  // Carrega Firebase SDK via CDN (já no HTML)
+  firebase.initializeApp(firebaseConfig);
+  const auth = firebase.auth();
+  const db = firebase.firestore();
+
+  initAuth(auth);
+  initDb(db, auth);
+
+  // Offline persistence
+  try {
+    await db.enablePersistence({ synchronizeTabs: true });
+  } catch (e) {
+    console.warn('Persistence não disponível:', e.code);
+  }
+
+  // Service Worker
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(console.warn);
+  }
+
+  // Monitor de conexão
+  window.addEventListener('online', () => $('#offline-badge')?.classList.remove('show'));
+  window.addEventListener('offline', () => $('#offline-badge')?.classList.add('show'));
+
+  onAuthChange(async (user) => {
+    if (user) {
+      state.user = user;
+      let profile = await getUser(user.uid);
+      if (!profile) {
+        // fallback raro
+        profile = { role: 'pending', name: user.displayName || 'Usuário', email: user.email };
+      }
+      state.profile = profile;
+      await routeByRole();
+    } else {
+      state.user = null;
+      state.profile = null;
+      showAuth();
+    }
+    hideSplash();
+  });
+}
+
+function hideSplash() {
+  const splash = $('#splash');
+  if (splash) {
+    splash.classList.add('fade-out');
+    setTimeout(() => splash.remove(), 350);
+  }
+}
+
+// ---------- ROTEAMENTO SIMPLES ----------
+async function routeByRole() {
+  const role = state.profile?.role;
+  if (role === 'personal') {
+    showPersonalHome();
+  } else if (role === 'aluno') {
+    showStudentHome();
+  } else {
+    showOnboarding();
+  }
+}
+
+// ---------- AUTH SCREEN ----------
+function showAuth() {
+  const app = $('#app');
+  app.innerHTML = `
+    <div class="auth-screen">
+      <div class="auth-logo">
+        <div class="logo-circle">ET</div>
+        <h1>Edmilson Treinador</h1>
+        <p>Seus treinos, sua evolução</p>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="btn-google" style="margin-bottom:16px">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+        Entrar com Google
+      </button>
+
+      <div style="text-align:center;color:var(--muted);font-size:0.85rem;margin:12px 0">ou</div>
+
+      <div class="form-group">
+        <label class="form-label">E-mail</label>
+        <input type="email" class="form-input" id="auth-email" placeholder="seu@email.com">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Senha</label>
+        <input type="password" class="form-input" id="auth-pass" placeholder="••••••••">
+      </div>
+      <button class="btn btn-outline btn-block" id="btn-email-login">Entrar com e-mail</button>
+      <p style="text-align:center;margin-top:20px;font-size:0.85rem;color:var(--muted)">
+        Aluno sem Google? Peça as credenciais ao seu personal.
+      </p>
+    </div>
+  `;
+
+  $('#btn-google').onclick = async () => {
+    try {
+      await loginWithGoogle();
+    } catch {}
+  };
+
+  $('#btn-email-login').onclick = async () => {
+    const email = $('#auth-email').value.trim();
+    const pass = $('#auth-pass').value;
+    if (!email || !pass) return toast('Preencha e-mail e senha', 'error');
+    try {
+      await loginWithEmail(email, pass);
+    } catch {}
+  };
+}
+
+// ---------- ONBOARDING (primeiro acesso) ----------
+function showOnboarding() {
+  const app = $('#app');
+  app.innerHTML = `
+    <div class="auth-screen">
+      <div class="auth-logo">
+        <div class="logo-circle">ET</div>
+        <h1>Bem-vindo!</h1>
+        <p>Como você vai usar o app?</p>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="btn-sou-personal" style="margin-bottom:12px">
+        Sou o Personal Trainer
+      </button>
+      <button class="btn btn-outline btn-block" id="btn-sou-aluno">
+        Sou Aluno (tenho código de convite)
+      </button>
+    </div>
+  `;
+
+  $('#btn-sou-personal').onclick = async () => {
+    const code = generateInviteCode();
+    await updateUser(state.user.uid, {
+      role: 'personal',
+      inviteCode: code,
+      personalId: null
+    });
+    state.profile.role = 'personal';
+    state.profile.inviteCode = code;
+    toast('Conta de Personal criada!', 'success');
+    showPersonalHome();
+  };
+
+  $('#btn-sou-aluno').onclick = () => {
+    showJoinWithCode();
+  };
+}
+
+function showJoinWithCode() {
+  const app = $('#app');
+  app.innerHTML = `
+    <div class="auth-screen">
+      <div class="auth-logo">
+        <h1 style="color:var(--accent)">Código de Convite</h1>
+        <p>Digite o código que o personal te enviou</p>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Código</label>
+        <input type="text" class="form-input" id="invite-code" placeholder="Ex: AB12CD" style="text-transform:uppercase;letter-spacing:2px;text-align:center;font-size:1.3rem">
+      </div>
+      <button class="btn btn-primary btn-block" id="btn-join">Entrar no time</button>
+      <button class="btn btn-outline btn-block" id="btn-back" style="margin-top:10px">Voltar</button>
+    </div>
+  `;
+
+  $('#btn-back').onclick = showOnboarding;
+  $('#btn-join').onclick = async () => {
+    const code = $('#invite-code').value.trim().toUpperCase();
+    if (!code) return toast('Digite o código', 'error');
+    const personal = await findPersonalByInviteCode(code);
+    if (!personal) return toast('Código inválido', 'error');
+    await updateUser(state.user.uid, {
+      role: 'aluno',
+      personalId: personal.id,
+      inviteCode: null
+    });
+    state.profile.role = 'aluno';
+    state.profile.personalId = personal.id;
+    toast(`Vinculado a ${personal.name}!`, 'success');
+    showStudentHome();
+  };
+}
+
+// ---------- ÁREA DO PERSONAL ----------
+async function showPersonalHome() {
+  const stats = await getPersonalStats(state.user.uid);
+  const students = await getStudentsOfPersonal(state.user.uid);
+
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <div class="title">Edmilson Treinador</div>
+      <div class="actions">
+        <button class="icon-btn" id="btn-logout" title="Sair">⎋</button>
+      </div>
+    </header>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="inicio">Início</button>
+      <button class="tab" data-tab="alunos">Alunos</button>
+      <button class="tab" data-tab="exercicios">Exercícios</button>
+      <button class="tab" data-tab="feedbacks">Feedbacks</button>
+    </div>
+
+    <div class="page" id="main-content"></div>
+  `;
+
+  $('#btn-logout').onclick = () => logout();
+
+  $$('.tab').forEach(tab => {
+    tab.onclick = () => {
+      $$('.tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      renderPersonalTab(tab.dataset.tab, students, stats);
+    };
+  });
+
+  renderPersonalTab('inicio', students, stats);
+}
+
+async function renderPersonalTab(tab, students, stats) {
+  const content = $('#main-content');
+  if (tab === 'inicio') {
+    content.innerHTML = `
+      <div class="stat-row">
+        <div class="stat-card">
+          <div class="stat-value">${stats.totalStudents}</div>
+          <div class="stat-label">Alunos</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">${stats.totalWorkoutsCompleted}</div>
+          <div class="stat-label">Treinos feitos</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">${stats.avgAdherence}%</div>
+          <div class="stat-label">Adesão</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Seu código de convite</div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="font-size:1.6rem;font-weight:700;color:var(--accent);letter-spacing:3px">${state.profile.inviteCode || '—'}</div>
+          <button class="btn btn-sm btn-outline" id="btn-copy-code">Copiar</button>
+        </div>
+        <p class="text-muted" style="font-size:0.8rem;margin-top:8px">Envie este código para o aluno se afiliar</p>
+      </div>
+
+      <div class="action-grid">
+        <div class="action-item" id="act-add-student">
+          <div class="icon">➕</div>
+          <div class="label">Adicionar aluno</div>
+        </div>
+        <div class="action-item" id="act-exercises">
+          <div class="icon">🏋️</div>
+          <div class="label">Biblioteca</div>
+        </div>
+        <div class="action-item" id="act-feedbacks">
+          <div class="icon">💬</div>
+          <div class="label">Feedbacks</div>
+        </div>
+        <div class="action-item" id="act-students">
+          <div class="icon">👥</div>
+          <div class="label">Ver alunos</div>
+        </div>
+      </div>
+    `;
+
+    $('#btn-copy-code')?.addEventListener('click', () => {
+      navigator.clipboard.writeText(state.profile.inviteCode || '');
+      toast('Código copiado!', 'success');
+    });
+    $('#act-add-student').onclick = () => showAddStudentModal();
+    $('#act-exercises').onclick = () => {
+      $$('.tab').forEach(t => t.classList.remove('active'));
+      $$('.tab')[2].classList.add('active');
+      renderPersonalTab('exercicios', students, stats);
+    };
+    $('#act-feedbacks').onclick = () => {
+      $$('.tab').forEach(t => t.classList.remove('active'));
+      $$('.tab')[3].classList.add('active');
+      renderPersonalTab('feedbacks', students, stats);
+    };
+    $('#act-students').onclick = () => {
+      $$('.tab').forEach(t => t.classList.remove('active'));
+      $$('.tab')[1].classList.add('active');
+      renderPersonalTab('alunos', students, stats);
+    };
+  }
+
+  if (tab === 'alunos') {
+    if (students.length === 0) {
+      content.innerHTML = `
+        <div class="empty">
+          <p>Nenhum aluno ainda</p>
+          <button class="btn btn-primary" style="margin-top:16px" id="btn-add-first">Adicionar primeiro aluno</button>
+        </div>`;
+      $('#btn-add-first').onclick = showAddStudentModal;
+      return;
+    }
+    content.innerHTML = `
+      <button class="btn btn-primary btn-block" id="btn-add-student" style="margin-bottom:16px">+ Adicionar aluno</button>
+      <div id="students-list"></div>
+    `;
+    $('#btn-add-student').onclick = showAddStudentModal;
+    const list = $('#students-list');
+    students.forEach(s => {
+      const card = el('div', { class: 'student-card', onClick: () => showStudentDetail(s) }, [
+        el('div', { class: 'avatar', text: initials(s.name) }),
+        el('div', { class: 'student-info' }, [
+          el('div', { class: 'student-name', text: s.name }),
+          el('div', { class: 'student-meta', text: s.email || '' })
+        ]),
+        el('div', { html: '›', style: 'color:var(--muted);font-size:1.4rem' })
+      ]);
+      list.appendChild(card);
+    });
+  }
+
+  if (tab === 'exercicios') {
+    await renderExercisesTab(content);
+  }
+
+  if (tab === 'feedbacks') {
+    await renderFeedbacksTab(content);
+  }
+}
+
+function showAddStudentModal() {
+  const html = `
+    <div class="form-group">
+      <label class="form-label">Nome completo</label>
+      <input type="text" class="form-input" id="new-name" placeholder="Nome do aluno">
+    </div>
+    <div class="form-group">
+      <label class="form-label">E-mail</label>
+      <input type="email" class="form-input" id="new-email" placeholder="aluno@email.com">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Senha temporária</label>
+      <input type="text" class="form-input" id="new-pass" placeholder="mín. 6 caracteres" value="treino123">
+    </div>
+    <p class="text-muted" style="font-size:0.8rem;margin-bottom:16px">
+      O aluno usará este e-mail e senha para entrar. Você pode enviar o código de convite também.
+    </p>
+    <button class="btn btn-primary btn-block" id="btn-create-student">Criar aluno</button>
+  `;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `<div class="modal"><div class="modal-header"><div class="modal-title">Novo aluno</div><button class="icon-btn" id="close-modal">✕</button></div>${html}</div>`;
+  document.body.appendChild(overlay);
+  $('#close-modal').onclick = () => overlay.remove();
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+  $('#btn-create-student').onclick = async () => {
+    const name = $('#new-name').value.trim();
+    const email = $('#new-email').value.trim();
+    const pass = $('#new-pass').value;
+    if (!name || !email || pass.length < 6) return toast('Preencha todos os campos', 'error');
+    try {
+      await createStudentAccount(email, pass, name, state.user.uid);
+      toast('Aluno criado com sucesso!', 'success');
+      overlay.remove();
+      showPersonalHome();
+    } catch {}
+  };
+}
+
+// ---------- EXERCÍCIOS ----------
+async function renderExercisesTab(content) {
+  const exercises = await getExercises(state.user.uid);
+  content.innerHTML = `
+    <button class="btn btn-primary btn-block" id="btn-new-ex" style="margin-bottom:16px">+ Criar exercício</button>
+    <div id="ex-list"></div>
+  `;
+  $('#btn-new-ex').onclick = () => showExerciseForm();
+
+  const list = $('#ex-list');
+  if (exercises.length === 0) {
+    list.innerHTML = `<div class="empty"><p>Nenhum exercício cadastrado</p></div>`;
+    return;
+  }
+  exercises.forEach(ex => {
+    const card = el('div', { class: 'card' }, [
+      el('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start' }, [
+        el('div', {}, [
+          el('div', { style: 'font-weight:600', text: ex.name }),
+          el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: ex.muscleGroup || '' })
+        ]),
+        el('button', { class: 'btn btn-sm btn-outline', text: 'Editar', onClick: () => showExerciseForm(ex) })
+      ])
+    ]);
+    list.appendChild(card);
+  });
+}
+
+function showExerciseForm(ex = null) {
+  const isEdit = !!ex;
+  const html = `
+    <div class="form-group">
+      <label class="form-label">Nome do exercício</label>
+      <input type="text" class="form-input" id="ex-name" value="${ex?.name || ''}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Grupo muscular</label>
+      <select class="form-select" id="ex-group">
+        ${['Peito','Costas','Ombros','Bíceps','Tríceps','Pernas','Glúteos','Abdômen','Cardio','Outro']
+          .map(g => `<option value="${g}" ${ex?.muscleGroup===g?'selected':''}>${g}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Link do vídeo (Google Drive)</label>
+      <input type="url" class="form-input" id="ex-video" value="${ex?.videoUrl || ''}" placeholder="https://drive.google.com/file/d/...">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Observações</label>
+      <textarea class="form-textarea" id="ex-notes">${ex?.notes || ''}</textarea>
+    </div>
+    <button class="btn btn-primary btn-block" id="btn-save-ex">${isEdit ? 'Salvar' : 'Criar exercício'}</button>
+  `;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `<div class="modal"><div class="modal-header"><div class="modal-title">${isEdit?'Editar':'Novo'} exercício</div><button class="icon-btn" id="close-modal">✕</button></div>${html}</div>`;
+  document.body.appendChild(overlay);
+  $('#close-modal').onclick = () => overlay.remove();
+
+  $('#btn-save-ex').onclick = async () => {
+    const data = {
+      personalId: state.user.uid,
+      name: $('#ex-name').value.trim(),
+      muscleGroup: $('#ex-group').value,
+      videoUrl: $('#ex-video').value.trim(),
+      notes: $('#ex-notes').value.trim(),
+      isCustom: true
+    };
+    if (!data.name) return toast('Nome obrigatório', 'error');
+    try {
+      if (isEdit) {
+        await updateExercise(ex.id, data);
+        toast('Exercício atualizado', 'success');
+      } else {
+        await createExercise(data);
+        toast('Exercício criado', 'success');
+      }
+      overlay.remove();
+      showPersonalHome();
+      // força aba exercícios
+      setTimeout(() => {
+        $$('.tab').forEach(t => t.classList.remove('active'));
+        $$('.tab')[2]?.classList.add('active');
+        renderPersonalTab('exercicios', [], {});
+      }, 100);
+    } catch (e) {
+      toast('Erro ao salvar', 'error');
+    }
+  };
+}
+
+// ---------- FEEDBACKS ----------
+async function renderFeedbacksTab(content) {
+  const feedbacks = await getFeedbacksForPersonal(state.user.uid, true);
+  if (feedbacks.length === 0) {
+    content.innerHTML = `<div class="empty"><p>Nenhum feedback pendente</p></div>`;
+    return;
+  }
+  content.innerHTML = `<div id="fb-list"></div>`;
+  const list = $('#fb-list');
+  feedbacks.forEach(fb => {
+    const card = el('div', { class: 'card' }, [
+      el('div', { style: 'font-weight:600;margin-bottom:4px', text: fb.studentName || 'Aluno' }),
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(fb.finishedAt) }),
+      el('div', { style: 'margin:10px 0', text: fb.feedback || 'Sem comentário' }),
+      el('div', { class: 'btn-group' }, [
+        el('button', {
+          class: 'btn btn-sm btn-primary',
+          text: 'Resolver',
+          onClick: async () => {
+            await resolveFeedback(fb.id);
+            toast('Feedback resolvido', 'success');
+            renderFeedbacksTab(content);
+          }
+        })
+      ])
+    ]);
+    list.appendChild(card);
+  });
+}
+
+// ---------- DETALHE DO ALUNO (Personal) ----------
+async function showStudentDetail(student) {
+  state.currentStudent = student;
+  const routines = await getRoutinesOfStudent(student.id);
+  const plans = await getPlansOfStudent(student.id);
+  const completed = await getCompletedByStudent(student.id, 10);
+
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">${student.name}</div>
+      <div style="width:40px"></div>
+    </header>
+    <div class="tabs">
+      <button class="tab active" data-tab="rotinas">Rotinas</button>
+      <button class="tab" data-tab="historico">Histórico</button>
+      <button class="tab" data-tab="plano">Plano</button>
+    </div>
+    <div class="page" id="student-content"></div>
+  `;
+
+  $('#btn-back').onclick = () => showPersonalHome();
+
+  $$('.tab').forEach(tab => {
+    tab.onclick = () => {
+      $$('.tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      renderStudentTab(tab.dataset.tab, student, routines, plans, completed);
+    };
+  });
+
+  renderStudentTab('rotinas', student, routines, plans, completed);
+}
+
+function renderStudentTab(tab, student, routines, plans, completed) {
+  const content = $('#student-content');
+
+  if (tab === 'rotinas') {
+    content.innerHTML = `
+      <button class="btn btn-primary btn-block" id="btn-new-routine" style="margin-bottom:16px">+ Criar rotina</button>
+      <div id="routines-list"></div>
+    `;
+    $('#btn-new-routine').onclick = () => showCreateRoutine(student);
+
+    const list = $('#routines-list');
+    if (routines.length === 0) {
+      list.innerHTML = `<div class="empty"><p>Nenhuma rotina atribuída</p></div>`;
+      return;
+    }
+    routines.forEach(r => {
+      const card = el('div', { class: 'card selectable', onClick: () => showRoutineDetail(r, student) }, [
+        el('div', { style: 'font-weight:600', text: r.name }),
+        el('div', { class: 'text-muted', style: 'font-size:0.8rem;margin-top:4px' }, [
+          document.createTextNode(`${r.type || ''} · ${r.level || ''}`),
+          el('br'),
+          document.createTextNode(`${formatDate(r.startDate)} → ${formatDate(r.endDate) || 'sem fim'}`)
+        ])
+      ]);
+      list.appendChild(card);
+    });
+  }
+
+  if (tab === 'historico') {
+    if (completed.length === 0) {
+      content.innerHTML = `<div class="empty"><p>Nenhum treino realizado ainda</p></div>`;
+      return;
+    }
+    content.innerHTML = '';
+    completed.forEach(c => {
+      content.appendChild(el('div', { class: 'card' }, [
+        el('div', { style: 'font-weight:600', text: c.workoutName || 'Treino' }),
+        el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) }),
+        el('div', { style: 'margin-top:6px', text: `Intensidade: ${c.intensity || '—'}` }),
+        c.feedback ? el('div', { class: 'text-muted', style: 'font-size:0.85rem;margin-top:4px', text: c.feedback }) : null
+      ]));
+    });
+  }
+
+  if (tab === 'plano') {
+    content.innerHTML = `
+      <button class="btn btn-primary btn-block" id="btn-new-plan" style="margin-bottom:16px">+ Adicionar plano</button>
+      <div id="plans-list"></div>
+    `;
+    $('#btn-new-plan').onclick = () => showCreatePlan(student);
+    const list = $('#plans-list');
+    if (plans.length === 0) {
+      list.innerHTML = `<div class="empty"><p>Nenhum plano cadastrado</p></div>`;
+      return;
+    }
+    plans.forEach(p => {
+      list.appendChild(el('div', { class: 'card' }, [
+        el('div', { style: 'display:flex;justify-content:space-between' }, [
+          el('div', { style: 'font-weight:600', text: p.name }),
+          el('span', { class: `badge ${p.status==='pago'?'badge-success':''}`, text: p.status })
+        ]),
+        el('div', { class: 'text-muted', style: 'font-size:0.85rem;margin-top:6px' }, [
+          document.createTextNode(`R$ ${Number(p.value).toFixed(2)} · Venc: ${formatDate(p.dueDate)}`)
+        ]),
+        p.pixKey ? el('div', { style: 'font-size:0.8rem;margin-top:4px', text: `PIX: ${p.pixKey}` }) : null,
+        p.status !== 'pago' ? el('button', {
+          class: 'btn btn-sm btn-success',
+          style: 'margin-top:10px',
+          text: 'Marcar como pago',
+          onClick: async () => {
+            await markPlanPaid(p.id);
+            toast('Plano marcado como pago', 'success');
+            showStudentDetail(student);
+          }
+        }) : null
+      ]));
+    });
+  }
+}
+
+function showCreateRoutine(student) {
+  const html = `
+    <div class="form-group">
+      <label class="form-label">Nome da rotina</label>
+      <input type="text" class="form-input" id="r-name" placeholder="Ex: Hipertrofia ABC">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Tipo</label>
+      <select class="form-select" id="r-type">
+        <option value="hipertrofia">Hipertrofia</option>
+        <option value="forca">Força</option>
+        <option value="aerobico">Aeróbico</option>
+        <option value="misto">Misto</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Nível</label>
+      <select class="form-select" id="r-level">
+        <option value="iniciante">Iniciante</option>
+        <option value="intermediario" selected>Intermediário</option>
+        <option value="avancado">Avançado</option>
+      </select>
+    </div>
+    <button class="btn btn-primary btn-block" id="btn-save-r">Criar rotina</button>
+  `;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `<div class="modal"><div class="modal-header"><div class="modal-title">Nova rotina</div><button class="icon-btn" id="close-modal">✕</button></div>${html}</div>`;
+  document.body.appendChild(overlay);
+  $('#close-modal').onclick = () => overlay.remove();
+
+  $('#btn-save-r').onclick = async () => {
+    const name = $('#r-name').value.trim();
+    if (!name) return toast('Nome obrigatório', 'error');
+    await createRoutine({
+      personalId: state.user.uid,
+      studentId: student.id,
+      name,
+      type: $('#r-type').value,
+      level: $('#r-level').value,
+      startDate: firebase.firestore.Timestamp.now(),
+      endDate: null,
+      showOnlyOnStartDate: false,
+      autoArchive: false
+    });
+    toast('Rotina criada', 'success');
+    overlay.remove();
+    showStudentDetail(student);
+  };
+}
+
+function showCreatePlan(student) {
+  const html = `
+    <div class="form-group">
+      <label class="form-label">Nome do plano</label>
+      <input type="text" class="form-input" id="p-name" placeholder="Mensalidade Outubro">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Valor (R$)</label>
+      <input type="number" class="form-input" id="p-value" placeholder="150.00" step="0.01">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Chave PIX</label>
+      <input type="text" class="form-input" id="p-pix" placeholder="sua-chave-pix">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Vencimento</label>
+      <input type="date" class="form-input" id="p-due">
+    </div>
+    <button class="btn btn-primary btn-block" id="btn-save-p">Salvar plano</button>
+  `;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `<div class="modal"><div class="modal-header"><div class="modal-title">Novo plano</div><button class="icon-btn" id="close-modal">✕</button></div>${html}</div>`;
+  document.body.appendChild(overlay);
+  $('#close-modal').onclick = () => overlay.remove();
+
+  $('#btn-save-p').onclick = async () => {
+    const name = $('#p-name').value.trim();
+    const value = parseFloat($('#p-value').value);
+    if (!name || isNaN(value)) return toast('Preencha nome e valor', 'error');
+    const due = $('#p-due').value ? firebase.firestore.Timestamp.fromDate(new Date($('#p-due').value)) : null;
+    await createPlan({
+      personalId: state.user.uid,
+      studentId: student.id,
+      name,
+      value,
+      pixKey: $('#p-pix').value.trim(),
+      dueDate: due
+    });
+    toast('Plano criado', 'success');
+    overlay.remove();
+    showStudentDetail(student);
+  };
+}
+
+// ---------- DETALHE DA ROTINA + TREINOS ----------
+async function showRoutineDetail(routine, student) {
+  state.currentRoutine = routine;
+  const workouts = await getWorkoutsOfRoutine(routine.id);
+
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">${routine.name}</div>
+      <div style="width:40px"></div>
+    </header>
+    <div class="page">
+      <button class="btn btn-primary btn-block" id="btn-add-workout" style="margin-bottom:16px">+ Adicionar treino</button>
+      <div id="workouts-list"></div>
+    </div>
+  `;
+
+  $('#btn-back').onclick = () => showStudentDetail(student);
+  $('#btn-add-workout').onclick = () => showCreateWorkout(routine, student);
+
+  const list = $('#workouts-list');
+  if (workouts.length === 0) {
+    list.innerHTML = `<div class="empty"><p>Nenhum treino nesta rotina</p></div>`;
+    return;
+  }
+  workouts.forEach(w => {
+    list.appendChild(el('div', { class: 'card selectable', onClick: () => showWorkoutEditor(w, routine, student) }, [
+      el('div', { style: 'font-weight:600', text: w.name }),
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${(w.exercises||[]).length} exercícios` })
+    ]));
+  });
+}
+
+function showCreateWorkout(routine, student) {
+  const html = `
+    <div class="form-group">
+      <label class="form-label">Nome do treino</label>
+      <input type="text" class="form-input" id="w-name" placeholder="Ex: Upper 1">
+    </div>
+    <button class="btn btn-primary btn-block" id="btn-save-w">Criar treino</button>
+  `;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `<div class="modal"><div class="modal-header"><div class="modal-title">Novo treino</div><button class="icon-btn" id="close-modal">✕</button></div>${html}</div>`;
+  document.body.appendChild(overlay);
+  $('#close-modal').onclick = () => overlay.remove();
+
+  $('#btn-save-w').onclick = async () => {
+    const name = $('#w-name').value.trim();
+    if (!name) return toast('Nome obrigatório', 'error');
+    await createWorkout({
+      routineId: routine.id,
+      personalId: state.user.uid,
+      studentId: student.id,
+      name,
+      order: 0,
+      exercises: []
+    });
+    toast('Treino criado', 'success');
+    overlay.remove();
+    showRoutineDetail(routine, student);
+  };
+}
+
+async function showWorkoutEditor(workout, routine, student) {
+  state.currentWorkout = workout;
+  const allExercises = await getExercises(state.user.uid);
+
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">${workout.name}</div>
+      <div style="width:40px"></div>
+    </header>
+    <div class="page">
+      <button class="btn btn-primary btn-block" id="btn-add-ex" style="margin-bottom:16px">+ Adicionar exercício</button>
+      <div id="ex-in-workout"></div>
+    </div>
+  `;
+
+  $('#btn-back').onclick = () => showRoutineDetail(routine, student);
+  $('#btn-add-ex').onclick = () => showPickExercise(allExercises, workout, routine, student);
+
+  renderWorkoutExercises(workout, routine, student);
+}
+
+function renderWorkoutExercises(workout, routine, student) {
+  const list = $('#ex-in-workout');
+  list.innerHTML = '';
+  const exercises = workout.exercises || [];
+  if (exercises.length === 0) {
+    list.innerHTML = `<div class="empty"><p>Nenhum exercício neste treino</p></div>`;
+    return;
+  }
+  exercises.forEach((ex, idx) => {
+    const setsHtml = (ex.sets || []).map((s, i) => `
+      <div class="set-row">
+        <div class="set-num">${i + 1}</div>
+        <div class="set-info">${s.reps || '—'} reps</div>
+        <div class="set-value">${s.weight || '0'} kg</div>
+      </div>
+    `).join('');
+
+    const card = el('div', { class: 'card' }, [
+      el('div', { style: 'font-weight:600;margin-bottom:6px', text: ex.name }),
+      ex.videoUrl ? el('div', { class: 'video-wrap' }, [
+        el('iframe', { src: driveToEmbed(ex.videoUrl), allow: 'autoplay' })
+      ]) : null,
+      el('div', { html: setsHtml || '<p class="text-muted" style="font-size:0.85rem">Sem séries definidas</p>' }),
+      el('div', { class: 'btn-group', style: 'margin-top:10px' }, [
+        el('button', {
+          class: 'btn btn-sm btn-outline',
+          text: 'Editar séries',
+          onClick: () => showEditSets(ex, idx, workout, routine, student)
+        }),
+        el('button', {
+          class: 'btn btn-sm btn-danger',
+          text: 'Remover',
+          onClick: async () => {
+            if (!(await confirmDialog('Remover este exercício?'))) return;
+            workout.exercises.splice(idx, 1);
+            await updateWorkout(workout.id, { exercises: workout.exercises });
+            toast('Removido', 'success');
+            showWorkoutEditor(workout, routine, student);
+          }
+        })
+      ])
+    ]);
+    list.appendChild(card);
+  });
+}
+
+function showPickExercise(allExercises, workout, routine, student) {
+  if (allExercises.length === 0) {
+    toast('Cadastre exercícios primeiro na aba Exercícios', 'error');
+    return;
+  }
+  const listHtml = allExercises.map(ex => `
+    <div class="student-card" data-id="${ex.id}" style="cursor:pointer">
+      <div class="student-info">
+        <div class="student-name">${ex.name}</div>
+        <div class="student-meta">${ex.muscleGroup || ''}</div>
+      </div>
+    </div>
+  `).join('');
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">Escolher exercício</div>
+        <button class="icon-btn" id="close-modal">✕</button>
+      </div>
+      <div style="max-height:60vh;overflow-y:auto">${listHtml}</div>
+    </div>`;
+  document.body.appendChild(overlay);
+  $('#close-modal').onclick = () => overlay.remove();
+
+  overlay.querySelectorAll('.student-card').forEach(card => {
+    card.onclick = async () => {
+      const ex = allExercises.find(e => e.id === card.dataset.id);
+      if (!workout.exercises) workout.exercises = [];
+      workout.exercises.push({
+        exerciseId: ex.id,
+        name: ex.name,
+        videoUrl: ex.videoUrl || '',
+        notes: ex.notes || '',
+        sets: [{ reps: '10', weight: '0', rest: '60', done: false }]
+      });
+      await updateWorkout(workout.id, { exercises: workout.exercises });
+      toast('Exercício adicionado', 'success');
+      overlay.remove();
+      showWorkoutEditor(workout, routine, student);
+    };
+  });
+}
+
+function showEditSets(ex, idx, workout, routine, student) {
+  const sets = ex.sets || [{ reps: '10', weight: '0', rest: '60' }];
+  let html = sets.map((s, i) => `
+    <div class="form-group" style="display:flex;gap:8px;align-items:flex-end">
+      <div style="flex:1">
+        <label class="form-label">Reps</label>
+        <input type="text" class="form-input set-reps" data-i="${i}" value="${s.reps||''}">
+      </div>
+      <div style="flex:1">
+        <label class="form-label">Carga</label>
+        <input type="text" class="form-input set-weight" data-i="${i}" value="${s.weight||''}">
+      </div>
+      <div style="flex:1">
+        <label class="form-label">Descanso(s)</label>
+        <input type="text" class="form-input set-rest" data-i="${i}" value="${s.rest||''}">
+      </div>
+    </div>
+  `).join('');
+
+  html += `
+    <button class="btn btn-outline btn-block" id="btn-add-set" style="margin-bottom:12px">+ Série</button>
+    <button class="btn btn-primary btn-block" id="btn-save-sets">Salvar séries</button>
+  `;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `<div class="modal"><div class="modal-header"><div class="modal-title">Séries – ${ex.name}</div><button class="icon-btn" id="close-modal">✕</button></div>${html}</div>`;
+  document.body.appendChild(overlay);
+  $('#close-modal').onclick = () => overlay.remove();
+
+  $('#btn-add-set').onclick = () => {
+    // simples: recarrega com uma série a mais
+    ex.sets = ex.sets || [];
+    ex.sets.push({ reps: '10', weight: '0', rest: '60' });
+    overlay.remove();
+    showEditSets(ex, idx, workout, routine, student);
+  };
+
+  $('#btn-save-sets').onclick = async () => {
+    const newSets = [];
+    $$('.set-reps').forEach((input, i) => {
+      newSets.push({
+        reps: input.value,
+        weight: $$('.set-weight')[i].value,
+        rest: $$('.set-rest')[i].value,
+        done: false
+      });
+    });
+    workout.exercises[idx].sets = newSets;
+    await updateWorkout(workout.id, { exercises: workout.exercises });
+    toast('Séries salvas', 'success');
+    overlay.remove();
+    showWorkoutEditor(workout, routine, student);
+  };
+}
+
+// ---------- ÁREA DO ALUNO ----------
+async function showStudentHome() {
+  const routines = await getRoutinesOfStudent(state.user.uid);
+  const completed = await getCompletedByStudent(state.user.uid, 5);
+
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <div class="title">Meus Treinos</div>
+      <div class="actions">
+        <button class="icon-btn" id="btn-logout" title="Sair">⎋</button>
+      </div>
+    </header>
+    <div class="page" style="padding-bottom:80px">
+      <div class="card note note-accent">
+        Olá, <strong>${state.profile.name}</strong>! Vamos treinar?
+      </div>
+      <div class="page-title">Rotinas ativas</div>
+      <div id="student-routines"></div>
+      <div class="page-title" style="margin-top:24px">Últimos treinos</div>
+      <div id="student-history"></div>
+    </div>
+    <nav class="bottom-nav">
+      <button class="nav-item active" data-nav="treinos">
+        <span>🏋️</span><span>Treinos</span>
+      </button>
+      <button class="nav-item" data-nav="historico">
+        <span>📊</span><span>Histórico</span>
+      </button>
+      <button class="nav-item" data-nav="perfil">
+        <span>👤</span><span>Perfil</span>
+      </button>
+    </nav>
+  `;
+
+  $('#btn-logout').onclick = () => logout();
+
+  const rList = $('#student-routines');
+  if (routines.length === 0) {
+    rList.innerHTML = `<div class="empty"><p>Nenhuma rotina atribuída ainda</p></div>`;
+  } else {
+    for (const r of routines) {
+      const workouts = await getWorkoutsOfRoutine(r.id);
+      const card = el('div', { class: 'card' }, [
+        el('div', { style: 'font-weight:700;color:var(--accent);margin-bottom:8px', text: r.name }),
+        ...workouts.map(w => el('div', {
+          class: 'student-card',
+          style: 'margin-bottom:8px',
+          onClick: () => showStudentWorkout(w, r)
+        }, [
+          el('div', { class: 'student-info' }, [
+            el('div', { class: 'student-name', text: w.name }),
+            el('div', { class: 'student-meta', text: `${(w.exercises||[]).length} exercícios` })
+          ]),
+          el('div', { html: '›', style: 'color:var(--accent)' })
+        ]))
+      ]);
+      rList.appendChild(card);
+    }
+  }
+
+  const hList = $('#student-history');
+  if (completed.length === 0) {
+    hList.innerHTML = `<p class="text-muted" style="font-size:0.9rem">Nenhum treino concluído ainda</p>`;
+  } else {
+    completed.forEach(c => {
+      hList.appendChild(el('div', { class: 'card' }, [
+        el('div', { style: 'font-weight:600', text: c.workoutName || 'Treino' }),
+        el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) })
+      ]));
+    });
+  }
+}
+
+async function showStudentWorkout(workout, routine) {
+  const app = $('#app');
+  const exercises = workout.exercises || [];
+
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">${workout.name}</div>
+      <div style="width:40px"></div>
+    </header>
+    <div class="page" style="padding-bottom:100px">
+      <div id="workout-exs"></div>
+      <div class="card" style="margin-top:20px">
+        <div class="form-group">
+          <label class="form-label">Como foi o treino?</label>
+          <select class="form-select" id="intensity">
+            <option value="leve">Leve</option>
+            <option value="moderada" selected>Moderada</option>
+            <option value="intensa">Intensa</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Feedback (opcional)</label>
+          <textarea class="form-textarea" id="feedback" placeholder="Como se sentiu, dores, dúvidas..."></textarea>
+        </div>
+        <button class="btn btn-success btn-block" id="btn-finish">Concluir treino</button>
+      </div>
+    </div>
+  `;
+
+  $('#btn-back').onclick = () => showStudentHome();
+
+  const list = $('#workout-exs');
+  exercises.forEach((ex, idx) => {
+    const setsHtml = (ex.sets || []).map((s, i) => `
+      <div class="set-row">
+        <div class="set-num">${i + 1}</div>
+        <div class="set-info">${s.reps} reps · descanso ${s.rest || '—'}s</div>
+        <div class="set-value">${s.weight || '0'} kg</div>
+      </div>
+    `).join('');
+
+    list.appendChild(el('div', { class: 'card' }, [
+      el('div', { style: 'font-weight:600;margin-bottom:8px', text: ex.name }),
+      ex.videoUrl ? el('div', { class: 'video-wrap' }, [
+        el('iframe', { src: driveToEmbed(ex.videoUrl), allow: 'autoplay; encrypted-media', allowfullscreen: true })
+      ]) : el('p', { class: 'text-muted', style: 'font-size:0.85rem', text: 'Sem vídeo' }),
+      el('div', { html: setsHtml })
+    ]));
+  });
+
+  $('#btn-finish').onclick = async () => {
+    const intensity = $('#intensity').value;
+    const feedback = $('#feedback').value.trim();
+    await saveCompletedWorkout({
+      workoutId: workout.id,
+      workoutName: workout.name,
+      studentId: state.user.uid,
+      studentName: state.profile.name,
+      personalId: state.profile.personalId,
+      intensity,
+      feedback,
+      startedAt: firebase.firestore.Timestamp.now(),
+      durationSeconds: 0,
+      resolved: false
+    });
+    toast('Treino concluído! Bom trabalho 💪', 'success');
+    showStudentHome();
+  };
+}
+
+// ---------- START ----------
+boot().catch(console.error);
