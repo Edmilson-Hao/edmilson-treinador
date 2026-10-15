@@ -84,7 +84,7 @@ export async function registerWithEmail(email, password, name, role = 'aluno', p
 }
 
 /** Personal cria conta de aluno manualmente */
-export async function createStudentAccount(email, password, name, personalId) {
+export async function createStudentAccount(email, password, name, personalId, extra = {}) {
   // Usamos uma instância secundária para não deslogar o personal
   const secondaryApp = firebase.initializeApp(firebase.app().options, 'Secondary');
   const secondaryAuth = secondaryApp.auth();
@@ -99,7 +99,11 @@ export async function createStudentAccount(email, password, name, personalId) {
       email,
       photoURL: null,
       personalId,
-      inviteCode: null
+      inviteCode: null,
+      phone: extra.phone || null,
+      sex: extra.sex || null,
+      birthDate: extra.birthDate || null,
+      ...extra
     };
     // Cria o documento no Firestore (usa o db principal)
     await firebase.firestore().collection('users').doc(result.user.uid).set({

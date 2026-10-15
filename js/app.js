@@ -98,6 +98,31 @@ async function routeByRole() {
 }
 
 /** Enter no input aciona o botão associado */
+/** Normaliza telefone BR para wa.me */
+function normalizePhone(phone) {
+  if (!phone) return '';
+  let d = String(phone).replace(/\D/g, '');
+  if (d.length >= 10 && d.length <= 11) d = '55' + d;
+  return d;
+}
+
+function waLink(phone, message = '') {
+  const d = normalizePhone(phone);
+  if (!d) return null;
+  const q = message ? `?text=${encodeURIComponent(message)}` : '';
+  return `https://wa.me/${d}${q}`;
+}
+
+function openWhatsApp(phone, message) {
+  const url = waLink(phone, message);
+  if (!url) {
+    toast('Telefone não cadastrado', 'error');
+    return false;
+  }
+  window.open(url, '_blank');
+  return true;
+}
+
 async function saveProfilePhoto(file) {
   try {
     toast('Processando foto...', 'success');
@@ -406,6 +431,18 @@ async function renderPersonalTab(tab, students, stats) {
       const url = await saveProfilePhoto(f);
       if (url) showPersonalHome();
     });
+    // toque longo / botão para perfil completo — adiciona atalho
+    const photoLabel = document.querySelector('.profile-photo-edit');
+    if (photoLabel && !$('#btn-open-profile')) {
+      const btn = el('button', {
+        class: 'btn btn-sm btn-outline',
+        style: 'margin-top:8px',
+        id: 'btn-open-profile',
+        text: 'Editar perfil completo',
+        onClick: () => showUserProfile()
+      });
+      photoLabel.parentElement?.appendChild(btn);
+    }
     const goTab = (name) => {
       $$('.tab').forEach(t => {
         t.classList.toggle('active', t.dataset.tab === name);
@@ -474,11 +511,15 @@ function showAddStudentModal() {
       <input type="email" class="form-input" id="new-email" placeholder="aluno@email.com">
     </div>
     <div class="form-group">
+      <label class="form-label">WhatsApp / telefone</label>
+      <input type="tel" class="form-input" id="new-phone" placeholder="11999999999">
+    </div>
+    <div class="form-group">
       <label class="form-label">Senha temporária</label>
       <input type="text" class="form-input" id="new-pass" placeholder="mín. 6 caracteres" value="treino123">
     </div>
     <p class="text-muted" style="font-size:0.8rem;margin-bottom:16px">
-      O aluno usará este e-mail e senha para entrar. Você pode enviar o código de convite também.
+      O aluno usará este e-mail e senha para entrar. Informe o WhatsApp para cobranças.
     </p>
     <button class="btn btn-primary btn-block" id="btn-create-student">Criar aluno</button>
   `;
@@ -495,10 +536,11 @@ function showAddStudentModal() {
   $('#btn-create-student').onclick = async () => {
     const name = $('#new-name').value.trim();
     const email = $('#new-email').value.trim();
+    const phone = $('#new-phone')?.value.trim() || '';
     const pass = $('#new-pass').value;
     if (!name || !email || pass.length < 6) return toast('Preencha todos os campos', 'error');
     try {
-      await createStudentAccount(email, pass, name, state.user.uid);
+      await createStudentAccount(email, pass, name, state.user.uid, { phone });
       toast('Aluno criado com sucesso!', 'success');
       overlay.remove();
       showPersonalHome();
@@ -647,7 +689,7 @@ async function renderFeedbacksTab(content) {
 async function showStudentDetail(student) {
   state.currentStudent = student;
   const routines = await getRoutinesOfStudent(student.id);
-  const plans = await getPlansOfStudent(student.id);
+  const plans = sortPlans(await getPlansOfStudent(student.id));
   const completed = await getCompletedByStudent(student.id, 10);
 
   const app = $('#app');
@@ -655,7 +697,7 @@ async function showStudentDetail(student) {
     <header class="app-header">
       <button class="icon-btn" id="btn-back">←</button>
       <div class="title" style="flex:1;text-align:center">${student.name}</div>
-      <button class="icon-btn" id="btn-home" title="Início">🏠</button>
+      <button class="icon-btn" id="btn-student-profile" title="Perfil">👤</button>
     </header>
     <div class="tabs">
       <button class="tab active" data-tab="rotinas">Rotinas</button>
@@ -667,6 +709,7 @@ async function showStudentDetail(student) {
 
   $('#btn-back').onclick = () => showPersonalHome();
   $('#btn-home')?.addEventListener('click', () => showPersonalHome());
+  $('#btn-student-profile')?.addEventListener('click', () => showUserProfile(student));
 
   $$('.tab').forEach(tab => {
     tab.onclick = () => {
@@ -762,16 +805,33 @@ function renderStudentTab(tab, student, routines, plans, completed) {
           }})
         ]));
       } else if (st !== 'pago') {
-        card.appendChild(el('button', {
-          class: 'btn btn-sm btn-success',
-          style: 'margin-top:10px',
-          text: 'Marcar como pago',
-          onClick: async () => {
-            await markPlanPaid(p.id);
-            toast('Fatura marcada como paga', 'success');
-            showStudentDetail(student);
-          }
-        }));
+        const waKey = `wa_sent_${p.id}`;
+        const alreadySent = localStorage.getItem(waKey) === '1';
+        const msg = `Olá ${student.name}! Tudo bem? 😊\n\nPassando para lembrar da fatura *${p.name}* no valor de *R$ ${Number(p.value||0).toFixed(2)}*.\n\nQuando puder quitar, me avisa por aqui ou sinaliza no app. Obrigado!`;
+        card.appendChild(el('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-top:10px' }, [
+          el('button', {
+            class: 'btn btn-sm btn-success',
+            text: 'Marcar como pago',
+            onClick: async () => {
+              await markPlanPaid(p.id);
+              toast('Fatura marcada como paga', 'success');
+              showStudentDetail(student);
+            }
+          }),
+          el('button', {
+            class: 'btn btn-sm btn-outline',
+            style: alreadySent ? 'opacity:0.45' : '',
+            text: alreadySent ? 'WhatsApp (enviado)' : 'WhatsApp',
+            onClick: () => {
+              if (!student.phone) return toast('Cadastre o telefone no perfil do aluno', 'error');
+              if (openWhatsApp(student.phone, msg)) {
+                localStorage.setItem(waKey, '1');
+                toast('Abrindo WhatsApp...', 'success');
+                showStudentDetail(student);
+              }
+            }
+          })
+        ]));
       }
       list.appendChild(card);
     });
@@ -1112,6 +1172,147 @@ function showEditSets(ex, idx, workout, routine, student) {
 }
 
 // ---------- ÁREA DO ALUNO ----------
+
+async function showUserProfile(targetUser = null, readOnly = false) {
+  // targetUser: se personal vê aluno; senão edita o próprio perfil
+  const isSelf = !targetUser;
+  const u = targetUser || state.profile;
+  const uid = targetUser?.id || state.user.uid;
+  const canEdit = isSelf || state.profile?.role === 'personal';
+
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">${isSelf ? 'Meu perfil' : 'Perfil do aluno'}</div>
+      <button class="icon-btn" id="btn-home">🏠</button>
+    </header>
+    <div class="page" style="padding-bottom:40px">
+      <div class="card" style="text-align:center">
+        <label class="profile-photo-edit" style="margin:0 auto 12px" title="Trocar foto">
+          ${photoEl(u.photoURL, u.name, 'profile-photo-lg')}
+          ${canEdit ? '<span class="edit-badge">Foto</span><input type="file" id="prof-photo" accept="image/*">' : ''}
+        </label>
+        <div style="font-weight:700;font-size:1.15rem">${u.name || '—'}</div>
+        <div class="text-muted" style="font-size:0.85rem">${u.email || ''}</div>
+        ${u.phone ? `<div style="margin-top:8px"><button class="btn btn-sm btn-success" id="btn-wa-profile">WhatsApp</button></div>` : ''}
+      </div>
+
+      <div class="page-title">Dados pessoais</div>
+      <div class="card">
+        <div class="form-group">
+          <label class="form-label">Nome completo</label>
+          <input type="text" class="form-input" id="pf-name" value="${u.name || ''}" ${canEdit ? '' : 'disabled'}>
+        </div>
+        <div class="form-group">
+          <label class="form-label">E-mail</label>
+          <input type="email" class="form-input" id="pf-email" value="${u.email || ''}" disabled>
+        </div>
+        <div class="form-group">
+          <label class="form-label">WhatsApp / telefone</label>
+          <input type="tel" class="form-input" id="pf-phone" value="${u.phone || ''}" placeholder="11999999999" ${canEdit ? '' : 'disabled'}>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Sexo</label>
+          <select class="form-select" id="pf-sex" ${canEdit ? '' : 'disabled'}>
+            <option value="">—</option>
+            <option value="masculino" ${u.sex==='masculino'?'selected':''}>Masculino</option>
+            <option value="feminino" ${u.sex==='feminino'?'selected':''}>Feminino</option>
+            <option value="outro" ${u.sex==='outro'?'selected':''}>Outro</option>
+            <option value="prefiro_nao" ${u.sex==='prefiro_nao'?'selected':''}>Prefiro não informar</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Data de nascimento</label>
+          <input type="date" class="form-input" id="pf-birth" value="${u.birthDate || ''}" ${canEdit ? '' : 'disabled'}>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Altura (cm)</label>
+          <input type="number" class="form-input" id="pf-height" value="${u.heightCm || ''}" placeholder="175" ${canEdit ? '' : 'disabled'}>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Peso (kg)</label>
+          <input type="number" class="form-input" id="pf-weight" value="${u.weightKg || ''}" placeholder="80" step="0.1" ${canEdit ? '' : 'disabled'}>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Objetivo</label>
+          <select class="form-select" id="pf-goal" ${canEdit ? '' : 'disabled'}>
+            <option value="">—</option>
+            ${['Hipertrofia','Emagrecimento','Força','Condicionamento','Saúde','Outro'].map(g =>
+              `<option value="${g}" ${u.goal===g?'selected':''}>${g}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Observações / restrições</label>
+          <textarea class="form-textarea" id="pf-notes" placeholder="Lesões, medicamentos, preferências..." ${canEdit ? '' : 'disabled'}>${u.notes || ''}</textarea>
+        </div>
+        ${canEdit ? '<button class="btn btn-primary btn-block" id="btn-save-profile">Salvar perfil</button>' : ''}
+      </div>
+    </div>
+  `;
+
+  const goBack = () => {
+    if (state.profile?.role === 'personal') {
+      if (targetUser) showStudentDetail(targetUser);
+      else showPersonalHome();
+    } else {
+      showStudentHome();
+    }
+  };
+  $('#btn-back').onclick = goBack;
+  $('#btn-home').onclick = () => state.profile?.role === 'personal' ? showPersonalHome() : showStudentHome();
+
+  $('#btn-wa-profile')?.addEventListener('click', () => {
+    openWhatsApp(u.phone, `Olá ${u.name}!`);
+  });
+
+  $('#prof-photo')?.addEventListener('change', async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (isSelf) {
+      const url = await saveProfilePhoto(f);
+      if (url) showUserProfile();
+    } else {
+      // personal updating student photo
+      try {
+        const dataUrl = await compressImageToBase64(f, 256, 0.72);
+        await updateUser(uid, { photoURL: dataUrl });
+        targetUser.photoURL = dataUrl;
+        toast('Foto atualizada', 'success');
+        showUserProfile(targetUser);
+      } catch (err) {
+        toast(err.message || 'Erro', 'error');
+      }
+    }
+  });
+
+  $('#btn-save-profile')?.addEventListener('click', async () => {
+    const data = {
+      name: $('#pf-name').value.trim(),
+      phone: $('#pf-phone').value.trim(),
+      sex: $('#pf-sex').value || null,
+      birthDate: $('#pf-birth').value || null,
+      heightCm: parseFloat($('#pf-height').value) || null,
+      weightKg: parseFloat($('#pf-weight').value) || null,
+      goal: $('#pf-goal').value || null,
+      notes: $('#pf-notes').value.trim() || null
+    };
+    if (!data.name) return toast('Informe o nome', 'error');
+    try {
+      await updateUser(uid, data);
+      if (isSelf) {
+        state.profile = { ...state.profile, ...data };
+      } else {
+        Object.assign(targetUser, data);
+      }
+      toast('Perfil salvo!', 'success');
+      goBack();
+    } catch (e) {
+      toast(e.message || 'Erro ao salvar', 'error');
+    }
+  });
+}
+
 async function showStudentHome() {
   let routines = [];
   let completed = [];
@@ -1119,7 +1320,7 @@ async function showStudentHome() {
   try {
     routines = await getRoutinesOfStudent(state.user.uid);
     completed = await getCompletedByStudent(state.user.uid, 5);
-    plans = await getPlansOfStudent(state.user.uid);
+    plans = sortPlans(await getPlansOfStudent(state.user.uid));
     if (state.profile.personalId) {
       const personal = await getUser(state.profile.personalId);
       if (personal?.pixKey) state.profile.personalPixKey = personal.pixKey;
@@ -1202,8 +1403,12 @@ async function showStudentHome() {
         <div class="page-title">Acesso rápido</div>
         <div class="action-grid">
           <div class="action-item" id="go-treinos"><div class="icon">🏋️</div><div class="label">Treinos</div></div>
-          <div class="action-item" id="go-fin"><div class="icon">💰</div><div class="label">Financeiro</div></div>
+          <div class="action-item" id="go-fin" style="${openPlans.length ? 'border:1.5px solid var(--danger);box-shadow:0 0 0 2px rgba(239,68,68,0.25)' : ''}">
+            <div class="icon">${openPlans.length ? '🚨' : '💰'}</div>
+            <div class="label" style="${openPlans.length ? 'color:var(--danger);font-weight:700' : ''}">${openPlans.length ? `Faturas (${openPlans.length})` : 'Financeiro'}</div>
+          </div>
           <div class="action-item" id="go-hist"><div class="icon">📊</div><div class="label">Histórico</div></div>
+          <div class="action-item" id="go-profile"><div class="icon">👤</div><div class="label">Meu perfil</div></div>
         </div>
         <div class="page-title" style="margin-top:8px">Últimos treinos</div>
         <div id="home-recent"></div>
@@ -1211,6 +1416,7 @@ async function showStudentHome() {
       $('#go-treinos').onclick = () => renderNav('treinos');
       $('#go-fin').onclick = () => renderNav('financeiro');
       $('#go-hist').onclick = () => renderNav('historico');
+      $('#go-profile')?.addEventListener('click', () => showUserProfile());
       $('#student-photo')?.addEventListener('change', async (e) => {
         const f = e.target.files?.[0];
         if (!f) return;
@@ -1273,6 +1479,7 @@ async function fillStudentRoutines(routines) {
 }
 
 function renderStudentFinance(main, plans) {
+  plans = sortPlans(plans);
   const pix = state.profile.personalPixKey || '';
   const hasOpen = plans.some(p => ['pendente','ativo','aguardando','recusado'].includes(p.status || 'pendente'));
   main.innerHTML = `
@@ -1391,6 +1598,18 @@ function movingAverage(values, window = 3) {
 
 
 /** Filtra treinos por período */
+function sortPlans(plans) {
+  const rank = { aguardando: 0, pendente: 1, ativo: 1, recusado: 2, pago: 3 };
+  return [...plans].sort((a, b) => {
+    const ra = rank[a.status || 'pendente'] ?? 9;
+    const rb = rank[b.status || 'pendente'] ?? 9;
+    if (ra !== rb) return ra - rb;
+    const ta = a.dueDate?.toMillis?.() || 0;
+    const tb = b.dueDate?.toMillis?.() || 0;
+    return ta - tb;
+  });
+}
+
 function filterByPeriod(completed, period) {
   const now = Date.now();
   const ms = {
@@ -1779,7 +1998,7 @@ async function renderFinanceiroTab(content) {
   let plans = [];
   let students = [];
   try {
-    plans = await getPlansOfPersonal(state.user.uid);
+    plans = sortPlans(await getPlansOfPersonal(state.user.uid));
     students = await getStudentsOfPersonal(state.user.uid);
   } catch (e) {
     console.error(e);
@@ -1886,10 +2105,16 @@ async function renderFinanceiroTab(content) {
           }
         })
       ]));
-    } else if (st === 'pendente' || st === 'ativo') {
-      card.appendChild(el('button', {
-        class: 'btn btn-sm btn-outline',
-        style: 'margin-top:10px',
+    } else if (st === 'pendente' || st === 'ativo' || st === 'recusado') {
+      const studentName = nameById[pl.studentId] || 'aluno';
+      const studentPhone = (students.find(s => s.id === pl.studentId) || {}).phone;
+      const waKey = `wa_sent_${pl.id}`;
+      const alreadySent = localStorage.getItem(waKey) === '1';
+      const msg = `Olá ${studentName}! Tudo bem? 😊\n\nPassando para lembrar da fatura *${pl.name}* no valor de *R$ ${Number(pl.value||0).toFixed(2)}*${pl.dueDate ? `, com vencimento em ${formatDate(pl.dueDate)}` : ''}.\n\nQuando puder, me avisa por aqui ou sinaliza o pagamento no app. Qualquer dúvida estou à disposição!`;
+
+      const actions = el('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-top:12px' });
+      actions.appendChild(el('button', {
+        class: 'btn btn-sm btn-success',
         text: 'Marcar como pago',
         onClick: async () => {
           await markPlanPaid(pl.id);
@@ -1897,6 +2122,20 @@ async function renderFinanceiroTab(content) {
           renderFinanceiroTab(content);
         }
       }));
+      actions.appendChild(el('button', {
+        class: 'btn btn-sm btn-outline',
+        style: alreadySent ? 'opacity:0.45' : '',
+        text: alreadySent ? 'WhatsApp (enviado)' : 'WhatsApp cobrança',
+        onClick: () => {
+          if (!studentPhone) return toast('Cadastre o telefone do aluno no perfil dele', 'error');
+          if (openWhatsApp(studentPhone, msg)) {
+            localStorage.setItem(waKey, '1');
+            toast('Abrindo WhatsApp...', 'success');
+            renderFinanceiroTab(content);
+          }
+        }
+      }));
+      card.appendChild(actions);
     }
     list.appendChild(card);
   });
