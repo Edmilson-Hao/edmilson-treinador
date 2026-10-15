@@ -1198,24 +1198,6 @@ async function fillStudentRoutines(routines) {
   }
 }
 
-function renderStudentHistory(main, completed) {
-  main.innerHTML = `<div class="page-title">Histórico de treinos</div><div id="student-history"></div>`;
-  const hList = $('#student-history');
-  if (!completed.length) {
-    hList.innerHTML = `<p class="text-muted">Nenhum treino concluído ainda</p>`;
-    return;
-  }
-  completed.forEach(c => {
-    const diffLabel = { facil: 'Fácil', moderado: 'Moderado', intenso: 'Intenso', leve: 'Leve', moderada: 'Moderada', intensa: 'Intensa' };
-    hList.appendChild(el('div', { class: 'card' }, [
-      el('div', { style: 'font-weight:600', text: c.workoutName || 'Treino' }),
-      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) }),
-      c.intensity ? el('div', { style: 'font-size:0.85rem;margin-top:4px', text: `Intensidade: ${diffLabel[c.intensity] || c.intensity}` }) : null,
-      c.exercisesPerformed?.length ? el('div', { class: 'text-muted', style: 'font-size:0.8rem;margin-top:4px', text: `${c.exercisesPerformed.length} exercícios registrados` }) : null
-    ]));
-  });
-}
-
 function renderStudentFinance(main, plans) {
   const pix = state.profile.personalPixKey || '';
   main.innerHTML = `
