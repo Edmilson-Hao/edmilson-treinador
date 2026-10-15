@@ -75,16 +75,57 @@ export function generateInviteCode(length = 6) {
   return code;
 }
 
-export function driveToEmbed(url) {
+/**
+ * Converte links de vídeo (Google Drive, YouTube, Shorts) para URL de embed.
+ * Exemplos aceitos:
+ * - https://drive.google.com/file/d/FILE_ID/view?...
+ * - https://www.youtube.com/watch?v=VIDEO_ID
+ * - https://www.youtube.com/shorts/VIDEO_ID
+ * - https://youtu.be/VIDEO_ID
+ * - https://youtube.com/embed/VIDEO_ID (já embed)
+ */
+export function videoToEmbed(url) {
   if (!url) return '';
-  // Converte links comuns do Google Drive para embed
-  // Ex: https://drive.google.com/file/d/FILE_ID/view → preview
-  const match = url.match(/\/d\/([a-zA-Z0-9_-]+)/);
-  if (match) {
-    return `https://drive.google.com/file/d/${match[1]}/preview`;
+  const u = url.trim();
+
+  // Google Drive: /file/d/ID/ ou /d/ID/
+  const drive = u.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/)
+             || u.match(/drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/)
+             || u.match(/drive\.google\.com\/.*[?&]id=([a-zA-Z0-9_-]+)/);
+  if (drive) {
+    return `https://drive.google.com/file/d/${drive[1]}/preview`;
   }
-  // Já é um link de preview ou outro
-  return url;
+
+  // YouTube Shorts
+  const shorts = u.match(/youtube\.com\/shorts\/([a-zA-Z0-9_-]+)/);
+  if (shorts) {
+    return `https://www.youtube.com/embed/${shorts[1]}`;
+  }
+
+  // YouTube watch?v=
+  const watch = u.match(/[?&]v=([a-zA-Z0-9_-]{6,})/);
+  if (watch && /youtu/.test(u)) {
+    return `https://www.youtube.com/embed/${watch[1]}`;
+  }
+
+  // youtu.be/ID
+  const short = u.match(/youtu\.be\/([a-zA-Z0-9_-]+)/);
+  if (short) {
+    return `https://www.youtube.com/embed/${short[1]}`;
+  }
+
+  // Já é embed do YouTube
+  if (/youtube\.com\/embed\//.test(u)) {
+    return u;
+  }
+
+  // Drive preview já pronto ou outro link
+  return u;
+}
+
+/** @deprecated use videoToEmbed */
+export function driveToEmbed(url) {
+  return videoToEmbed(url);
 }
 
 export function debounce(fn, ms = 300) {

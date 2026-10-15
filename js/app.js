@@ -5,7 +5,7 @@
 import { firebaseConfig } from './firebase-config.js';
 import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEmail, logout, createStudentAccount } from './shared/auth.js';
 import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, createExercise, updateExercise, getRoutinesOfStudent, createRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, createPlan, getPlansOfStudent, markPlanPaid } from './shared/db.js';
-import { $, $$, el, toast, formatDate, formatDateTime, initials, driveToEmbed, confirmDialog, generateInviteCode } from './shared/utils.js';
+import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, confirmDialog, generateInviteCode } from './shared/utils.js';
 
 // Captura erros de rate-limit e mostra toast amigável
 window.addEventListener('unhandledrejection', (e) => {
@@ -471,7 +471,7 @@ function showExerciseForm(ex = null) {
     </div>
     <div class="form-group">
       <label class="form-label">Link do vídeo (Google Drive)</label>
-      <input type="url" class="form-input" id="ex-video" value="${ex?.videoUrl || ''}" placeholder="https://drive.google.com/file/d/...">
+      <input type="url" class="form-input" id="ex-video" value="${ex?.videoUrl || ''}" placeholder="YouTube, Shorts ou Google Drive">
     </div>
     <div class="form-group">
       <label class="form-label">Observações</label>
@@ -866,7 +866,7 @@ function renderWorkoutExercises(workout, routine, student) {
     const card = el('div', { class: 'card' }, [
       el('div', { style: 'font-weight:600;margin-bottom:6px', text: ex.name }),
       ex.videoUrl ? el('div', { class: 'video-wrap' }, [
-        el('iframe', { src: driveToEmbed(ex.videoUrl), allow: 'autoplay' })
+        el('iframe', { src: videoToEmbed(ex.videoUrl), allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share', allowfullscreen: true, frameborder: '0', referrerpolicy: 'strict-origin-when-cross-origin' })
       ]) : null,
       el('div', { html: setsHtml || '<p class="text-muted" style="font-size:0.85rem">Sem séries definidas</p>' }),
       el('div', { class: 'btn-group', style: 'margin-top:10px' }, [
@@ -1120,7 +1120,7 @@ async function showStudentWorkout(workout, routine) {
     list.appendChild(el('div', { class: 'card' }, [
       el('div', { style: 'font-weight:600;margin-bottom:8px', text: ex.name }),
       ex.videoUrl ? el('div', { class: 'video-wrap' }, [
-        el('iframe', { src: driveToEmbed(ex.videoUrl), allow: 'autoplay; encrypted-media', allowfullscreen: true })
+        el('iframe', { src: videoToEmbed(ex.videoUrl), allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share', allowfullscreen: true, frameborder: '0', referrerpolicy: 'strict-origin-when-cross-origin' })
       ]) : el('p', { class: 'text-muted', style: 'font-size:0.85rem', text: 'Sem vídeo' }),
       el('div', { html: setsHtml })
     ]));
