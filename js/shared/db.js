@@ -1,6 +1,6 @@
 // =====================================================
 // CAMADA DE DADOS - Firestore
-// Com limites de leitura e proteção básica
+// Queries simplificadas (sem índice composto no MVP)
 // =====================================================
 
 import { toast } from './utils.js';
@@ -9,13 +9,12 @@ import { guard } from './rateLimit.js';
 let db = null;
 let auth = null;
 
-// Limites máximos por query (protege contra leitura excessiva)
 const LIMITS = {
-  students: 30,          // máx alunos por personal
-  exercises: 200,        // máx exercícios
-  routines: 20,          // máx rotinas por aluno
-  workouts: 30,          // máx treinos por rotina
-  completed: 40,         // histórico
+  students: 30,
+  exercises: 200,
+  routines: 20,
+  workouts: 30,
+  completed: 40,
   feedbacks: 50,
   plans: 20,
   anamneses: 15,
@@ -29,6 +28,16 @@ export function initDb(firestore, authInstance) {
 
 function col(name) {
   return db.collection(name);
+}
+
+function sortBy(arr, key, dir = 'asc') {
+  return [...arr].sort((a, b) => {
+    const va = a[key] ?? '';
+    const vb = b[key] ?? '';
+    if (va < vb) return dir === 'asc' ? -1 : 1;
+    if (va > vb) return dir === 'asc' ? 1 : -1;
+    return 0;
+  });
 }
 
 // ---------- USERS ----------
@@ -49,7 +58,6 @@ export async function createUser(uid, data) {
 
 export async function updateUser(uid, data) {
   guard('updateUser', 10, 10000);
-  // set+merge evita erro "No document to update" se o doc ainda não existir
   await col('users').doc(uid).set({
     ...data,
     lastLogin: firebase.firestore.FieldValue.serverTimestamp()
@@ -57,26 +65,28 @@ export async function updateUser(uid, data) {
 }
 
 export async function findPersonalByInviteCode(code) {
-  guard('findInvite', 5, 30000); // bem restrito – evita brute-force de códigos
+  guard('findInvite', 5, 30000);
+  // Apenas 1 filtro de igualdade → sem índice composto
   const snap = await col('users')
-    .where('role', '==', 'personal')
     .where('inviteCode', '==', code.toUpperCase())
-    .limit(1)
+    .limit(5)
     .get();
-  if (snap.empty) return null;
-  const doc = snap.docs[0];
-  return { id: doc.id, ...doc.data() };
+  const personal = snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .find(u => u.role === 'personal');
+  return personal || null;
 }
 
 export async function getStudentsOfPersonal(personalId) {
   guard('listStudents', 6, 15000);
   const snap = await col('users')
-    .where('role', '==', 'aluno')
     .where('personalId', '==', personalId)
-    .orderBy('name')
     .limit(LIMITS.students)
     .get();
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  const list = snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter(u => u.role === 'aluno');
+  return sortBy(list, 'name');
 }
 
 // ---------- EXERCISES ----------
@@ -84,10 +94,9 @@ export async function getExercises(personalId) {
   guard('listExercises', 8, 12000);
   const snap = await col('exercises')
     .where('personalId', '==', personalId)
-    .orderBy('name')
     .limit(LIMITS.exercises)
     .get();
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  return sortBy(snap.docs.map(d => ({ id: d.id, ...d.data() })), 'name');
 }
 
 export async function createExercise(data) {
@@ -114,11 +123,12 @@ export async function getRoutinesOfStudent(studentId) {
   guard('listRoutines', 8, 12000);
   const snap = await col('routines')
     .where('studentId', '==', studentId)
-    .where('archived', '==', false)
-    .orderBy('order')
     .limit(LIMITS.routines)
     .get();
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  const list = snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter(r => r.archived !== true);
+  return sortBy(list, 'order');
 }
 
 export async function createRoutine(data) {
@@ -147,10 +157,9 @@ export async function getWorkoutsOfRoutine(routineId) {
   guard('listWorkouts', 10, 12000);
   const snap = await col('workouts')
     .where('routineId', '==', routineId)
-    .orderBy('order')
     .limit(LIMITS.workouts)
     .get();
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  return sortBy(snap.docs.map(d => ({ id: d.id, ...d.data() })), 'order');
 }
 
 export async function createWorkout(data) {
@@ -174,7 +183,7 @@ export async function deleteWorkout(id) {
 
 // ---------- COMPLETED WORKOUTS ----------
 export async function saveCompletedWorkout(data) {
-  guard('saveCompleted', 5, 30000); // aluno não deve spammar conclusão
+  guard('saveCompleted', 5, 30000);
   const ref = await col('completedWorkouts').add({
     ...data,
     finishedAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -186,24 +195,30 @@ export async function getCompletedByStudent(studentId, limit = 30) {
   guard('listCompleted', 8, 12000);
   const snap = await col('completedWorkouts')
     .where('studentId', '==', studentId)
-    .orderBy('finishedAt', 'desc')
     .limit(Math.min(limit, LIMITS.completed))
     .get();
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  // ordena no cliente (mais recente primeiro)
+  return list.sort((a, b) => {
+    const ta = a.finishedAt?.toMillis?.() || 0;
+    const tb = b.finishedAt?.toMillis?.() || 0;
+    return tb - ta;
+  });
 }
 
 export async function getFeedbacksForPersonal(personalId, onlyUnresolved = true) {
   guard('listFeedbacks', 6, 15000);
   const snap = await col('completedWorkouts')
     .where('personalId', '==', personalId)
-    .orderBy('finishedAt', 'desc')
     .limit(LIMITS.feedbacks)
     .get();
   let list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-  if (onlyUnresolved) {
-    list = list.filter(f => !f.resolved);
-  }
-  return list;
+  if (onlyUnresolved) list = list.filter(f => !f.resolved);
+  return list.sort((a, b) => {
+    const ta = a.finishedAt?.toMillis?.() || 0;
+    const tb = b.finishedAt?.toMillis?.() || 0;
+    return tb - ta;
+  });
 }
 
 export async function resolveFeedback(id) {
@@ -216,10 +231,14 @@ export async function getPlansOfStudent(studentId) {
   guard('listPlans', 8, 12000);
   const snap = await col('plans')
     .where('studentId', '==', studentId)
-    .orderBy('dueDate', 'desc')
     .limit(LIMITS.plans)
     .get();
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  return list.sort((a, b) => {
+    const ta = a.dueDate?.toMillis?.() || 0;
+    const tb = b.dueDate?.toMillis?.() || 0;
+    return tb - ta;
+  });
 }
 
 export async function createPlan(data) {
@@ -255,10 +274,14 @@ export async function getAnamnesesOfStudent(studentId) {
   guard('listAnamneses', 6, 15000);
   const snap = await col('anamneses')
     .where('studentId', '==', studentId)
-    .orderBy('createdAt', 'desc')
     .limit(LIMITS.anamneses)
     .get();
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  return list.sort((a, b) => {
+    const ta = a.createdAt?.toMillis?.() || 0;
+    const tb = b.createdAt?.toMillis?.() || 0;
+    return tb - ta;
+  });
 }
 
 // ---------- REMINDERS ----------
@@ -276,27 +299,24 @@ export async function getReminders(personalId) {
   guard('listReminders', 6, 15000);
   const snap = await col('reminders')
     .where('personalId', '==', personalId)
-    .where('notified', '==', false)
-    .orderBy('date')
     .limit(LIMITS.reminders)
     .get();
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  return snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter(r => r.notified !== true);
 }
 
 // ---------- STATS ----------
 export async function getPersonalStats(personalId) {
   guard('getStats', 5, 20000);
   const students = await getStudentsOfPersonal(personalId);
-  // Contagem limitada – evita full scan
   const completedSnap = await col('completedWorkouts')
     .where('personalId', '==', personalId)
-    .limit(500) // teto de segurança
+    .limit(500)
     .get();
   const totalCompleted = completedSnap.size;
-
   const expected = Math.max(students.length * 12, 1);
   const adherence = Math.min(100, Math.round((totalCompleted / expected) * 100));
-
   return {
     totalStudents: students.length,
     totalWorkoutsCompleted: totalCompleted,

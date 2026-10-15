@@ -44,7 +44,7 @@ async function boot() {
 
   // Service Worker
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(console.warn);
+    navigator.serviceWorker.register((window.location.pathname.replace(/\/[^/]*$/, '/') || '/') + 'sw.js').catch(console.warn);
   }
 
   // Monitor de conexão
@@ -80,13 +80,20 @@ function hideSplash() {
 
 // ---------- ROTEAMENTO SIMPLES ----------
 async function routeByRole() {
-  const role = state.profile?.role;
-  if (role === 'personal') {
-    showPersonalHome();
-  } else if (role === 'aluno') {
-    showStudentHome();
-  } else {
-    showOnboarding();
+  try {
+    const role = state.profile?.role;
+    if (role === 'personal') {
+      await showPersonalHome();
+    } else if (role === 'aluno') {
+      await showStudentHome();
+    } else {
+      showOnboarding();
+    }
+  } catch (e) {
+    console.error(e);
+    toast(e.message || 'Erro ao carregar. Tente atualizar a página.', 'error');
+    // fallback: mostra onboarding se perfil quebrado
+    if (!state.profile?.role || state.profile.role === 'pending') showOnboarding();
   }
 }
 
@@ -230,8 +237,15 @@ function showJoinWithCode() {
 
 // ---------- ÁREA DO PERSONAL ----------
 async function showPersonalHome() {
-  const stats = await getPersonalStats(state.user.uid);
-  const students = await getStudentsOfPersonal(state.user.uid);
+  let stats = { totalStudents: 0, totalWorkoutsCompleted: 0, avgAdherence: 0 };
+  let students = [];
+  try {
+    stats = await getPersonalStats(state.user.uid);
+    students = await getStudentsOfPersonal(state.user.uid);
+  } catch (e) {
+    console.error(e);
+    toast('Erro ao carregar dados. Se persistir, verifique o Firestore.', 'error');
+  }
 
   const app = $('#app');
   app.innerHTML = `
@@ -982,8 +996,15 @@ function showEditSets(ex, idx, workout, routine, student) {
 
 // ---------- ÁREA DO ALUNO ----------
 async function showStudentHome() {
-  const routines = await getRoutinesOfStudent(state.user.uid);
-  const completed = await getCompletedByStudent(state.user.uid, 5);
+  let routines = [];
+  let completed = [];
+  try {
+    routines = await getRoutinesOfStudent(state.user.uid);
+    completed = await getCompletedByStudent(state.user.uid, 5);
+  } catch (e) {
+    console.error(e);
+    toast('Erro ao carregar treinos.', 'error');
+  }
 
   const app = $('#app');
   app.innerHTML = `
