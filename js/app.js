@@ -97,6 +97,18 @@ async function routeByRole() {
   }
 }
 
+/** Enter no input aciona o botão associado */
+function bindEnter(inputSel, btnSelOrFn) {
+  const inp = typeof inputSel === 'string' ? $(inputSel) : inputSel;
+  if (!inp) return;
+  inp.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (typeof btnSelOrFn === 'function') btnSelOrFn();
+    else $(btnSelOrFn)?.click();
+  });
+}
+
 // ---------- AUTH SCREEN ----------
 function showAuth() {
   const app = $('#app');
@@ -136,7 +148,7 @@ function showAuth() {
     } catch {}
   };
 
-  $('#btn-email-login').onclick = async () => {
+  const doEmailLogin = async () => {
     const email = $('#auth-email').value.trim();
     const pass = $('#auth-pass').value;
     if (!email || !pass) return toast('Preencha e-mail e senha', 'error');
@@ -144,6 +156,12 @@ function showAuth() {
       await loginWithEmail(email, pass);
     } catch {}
   };
+  $('#btn-email-login').onclick = doEmailLogin;
+  ['auth-email', 'auth-pass'].forEach(id => {
+    $('#' + id)?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); doEmailLogin(); }
+    });
+  });
 }
 
 // ---------- ONBOARDING (primeiro acesso) ----------
@@ -210,6 +228,7 @@ function showJoinWithCode() {
   `;
 
   $('#btn-back').onclick = showOnboarding;
+  bindEnter('#invite-code', '#btn-join');
   $('#btn-join').onclick = async () => {
     try {
       const code = $('#invite-code').value.trim().toUpperCase();
@@ -431,6 +450,9 @@ function showAddStudentModal() {
   $('#close-modal').onclick = () => overlay.remove();
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 
+  bindEnter('#new-name', '#btn-create-student');
+  bindEnter('#new-email', '#btn-create-student');
+  bindEnter('#new-pass', '#btn-create-student');
   $('#btn-create-student').onclick = async () => {
     const name = $('#new-name').value.trim();
     const email = $('#new-email').value.trim();
@@ -500,7 +522,7 @@ function showExerciseForm(ex = null) {
     <div class="form-group">
       <label class="form-label">Grupo muscular</label>
       <select class="form-select" id="ex-group">
-        ${['Peito','Costas','Ombros','Bíceps','Tríceps','Pernas','Glúteos','Abdômen','Cardio','Outro']
+        ${['Peito','Costas','Ombros','Bíceps','Tríceps','Quadríceps','Posterior de coxa','Glúteos','Abdômen','Cardio','Outro']
           .map(g => `<option value="${g}" ${ex?.muscleGroup===g?'selected':''}>${g}</option>`).join('')}
       </select>
     </div>
@@ -1390,8 +1412,12 @@ function showStudentCompletedDetail(completed, maValue) {
 async function showStudentWorkout(workout, routine) {
   const app = $('#app');
   const exercises = workout.exercises || [];
+  const storageKey = `workout_done_${state.user.uid}_${workout.id}`;
 
-  // estado editável por exercício
+  // estado de concluído por exercício (localStorage — zera ao finalizar treino)
+  let doneMap = {};
+  try { doneMap = JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch { doneMap = {}; }
+
   const performed = exercises.map(ex => ({
     name: ex.name,
     exerciseId: ex.exerciseId || null,
@@ -1404,6 +1430,9 @@ async function showStudentWorkout(workout, routine) {
     }))
   }));
 
+  const saveDoneMap = () => localStorage.setItem(storageKey, JSON.stringify(doneMap));
+  const clearDoneMap = () => localStorage.removeItem(storageKey);
+
   app.innerHTML = `
     <header class="app-header">
       <button class="icon-btn" id="btn-home" title="Início">🏠</button>
@@ -1412,8 +1441,9 @@ async function showStudentWorkout(workout, routine) {
     </header>
     <div class="page" style="padding-bottom:100px">
       <div class="card note" style="font-size:0.85rem">
-        Ajuste a <strong>carga</strong> e as <strong>reps</strong> que você realmente usou e marque a dificuldade de cada exercício.
+        Toque no exercício para expandir séries. Marque <strong>Concluir</strong> ao terminar cada um.
       </div>
+      <div id="workout-progress" style="font-size:0.85rem;color:var(--muted);margin-bottom:12px"></div>
       <div id="workout-exs"></div>
       <div class="card" style="margin-top:20px">
         <div class="form-group">
@@ -1428,7 +1458,7 @@ async function showStudentWorkout(workout, routine) {
           <label class="form-label">Feedback geral (opcional)</label>
           <textarea class="form-textarea" id="feedback" placeholder="Como se sentiu, dores, dúvidas..."></textarea>
         </div>
-        <button class="btn btn-success btn-block" id="btn-finish">Concluir treino</button>
+        <button class="btn btn-success btn-block" id="btn-finish">Finalizar treino</button>
       </div>
     </div>
   `;
@@ -1436,24 +1466,59 @@ async function showStudentWorkout(workout, routine) {
   $('#btn-home').onclick = () => showStudentHome();
   $('#btn-back').onclick = () => showStudentHome();
 
+  const updateProgress = () => {
+    const done = Object.values(doneMap).filter(Boolean).length;
+    const elp = $('#workout-progress');
+    if (elp) elp.textContent = `${done} de ${performed.length} exercícios concluídos`;
+  };
+
   const list = $('#workout-exs');
+
   performed.forEach((ex, idx) => {
-    const card = el('div', { class: 'card', id: `ex-card-${idx}` });
+    const isDone = !!doneMap[idx];
+    const card = el('div', {
+      class: 'card',
+      id: `ex-card-${idx}`,
+      style: isDone ? 'opacity:0.75;border-color:var(--success)' : ''
+    });
+
+    const summarySets = (ex.sets || []).map(s => `${s.reps}×${s.weight || 0}kg`).join(' · ');
+
     card.innerHTML = `
-      <div style="font-weight:600;margin-bottom:8px">${ex.name}</div>
-      ${ex.videoUrl ? `<div class="video-wrap"><iframe src="${videoToEmbed(ex.videoUrl)}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen frameborder="0"></iframe></div>` : '<p class="text-muted" style="font-size:0.85rem">Sem vídeo</p>'}
-      <div class="form-group" style="margin-top:12px">
-        <label class="form-label">Dificuldade deste exercício</label>
-        <div class="diff-row" data-ex="${idx}">
-          <button type="button" class="btn btn-sm btn-outline diff-btn" data-d="facil">Fácil</button>
-          <button type="button" class="btn btn-sm btn-primary diff-btn" data-d="moderado">Moderado</button>
-          <button type="button" class="btn btn-sm btn-outline diff-btn" data-d="intenso">Intenso</button>
+      <div class="ex-header" data-idx="${idx}" style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none">
+        <span class="ex-chevron" style="color:var(--accent);font-size:0.9rem;transition:transform .15s">▶</span>
+        <div style="flex:1">
+          <div style="font-weight:600;display:flex;align-items:center;gap:8px">
+            ${isDone ? '<span style="color:var(--success)">✓</span>' : ''}
+            <span>${ex.name}</span>
+          </div>
+          <div class="text-muted" style="font-size:0.8rem;margin-top:2px">${ex.sets.length} séries · ${summarySets || '—'}</div>
         </div>
       </div>
-      <div class="sets-edit" data-ex="${idx}"></div>
+      <div class="ex-body" data-idx="${idx}" style="display:none;margin-top:12px">
+        ${ex.videoUrl ? `<div class="video-wrap"><iframe src="${videoToEmbed(ex.videoUrl)}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen frameborder="0"></iframe></div>` : ''}
+        <div class="form-group" style="margin-top:12px">
+          <label class="form-label">Dificuldade deste exercício</label>
+          <div class="diff-row" data-ex="${idx}">
+            <button type="button" class="btn btn-sm btn-outline diff-btn" data-d="facil">Fácil</button>
+            <button type="button" class="btn btn-sm btn-primary diff-btn" data-d="moderado">Moderado</button>
+            <button type="button" class="btn btn-sm btn-outline diff-btn" data-d="intenso">Intenso</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:6px;padding:0 0 0 36px;font-size:0.75rem;color:var(--muted);font-weight:600">
+          <div style="width:28px"></div>
+          <div style="flex:1">Reps</div>
+          <div style="flex:1">Kg</div>
+        </div>
+        <div class="sets-edit" data-ex="${idx}"></div>
+        <button type="button" class="btn btn-block btn-toggle-done" data-idx="${idx}" style="margin-top:12px">
+          ${isDone ? '↩ Refazer exercício' : '✓ Concluir exercício'}
+        </button>
+      </div>
     `;
     list.appendChild(card);
 
+    // sets inputs
     const setsEl = card.querySelector('.sets-edit');
     ex.sets.forEach((s, si) => {
       const row = document.createElement('div');
@@ -1461,14 +1526,30 @@ async function showStudentWorkout(workout, routine) {
       row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px';
       row.innerHTML = `
         <div class="set-num">${si + 1}</div>
-        <input type="number" class="form-input" style="flex:1" data-field="reps" data-ex="${idx}" data-set="${si}" value="${s.reps}" placeholder="Reps" min="0">
-        <input type="number" class="form-input" style="flex:1" data-field="weight" data-ex="${idx}" data-set="${si}" value="${s.weight}" placeholder="Kg" min="0" step="0.5">
+        <div style="flex:1">
+          <input type="number" class="form-input" data-field="reps" data-ex="${idx}" data-set="${si}" value="${s.reps}" placeholder="Reps" min="0" inputmode="numeric">
+        </div>
+        <div style="flex:1">
+          <input type="number" class="form-input" data-field="weight" data-ex="${idx}" data-set="${si}" value="${s.weight}" placeholder="Kg" min="0" step="0.5" inputmode="decimal">
+        </div>
       `;
       setsEl.appendChild(row);
     });
 
+    // toggle expand
+    const header = card.querySelector('.ex-header');
+    const body = card.querySelector('.ex-body');
+    const chevron = card.querySelector('.ex-chevron');
+    header.onclick = () => {
+      const open = body.style.display !== 'none';
+      body.style.display = open ? 'none' : 'block';
+      chevron.style.transform = open ? '' : 'rotate(90deg)';
+    };
+
+    // difficulty
     card.querySelectorAll('.diff-btn').forEach(btn => {
-      btn.onclick = () => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
         performed[idx].difficulty = btn.dataset.d;
         card.querySelectorAll('.diff-btn').forEach(b => {
           b.classList.toggle('btn-primary', b.dataset.d === btn.dataset.d);
@@ -1477,15 +1558,26 @@ async function showStudentWorkout(workout, routine) {
       };
     });
 
+    // inputs
     card.querySelectorAll('input[data-field]').forEach(inp => {
       inp.onchange = inp.oninput = () => {
         const ei = +inp.dataset.ex;
         const si = +inp.dataset.set;
-        const field = inp.dataset.field;
-        performed[ei].sets[si][field] = parseFloat(inp.value) || 0;
+        performed[ei].sets[si][inp.dataset.field] = parseFloat(inp.value) || 0;
       };
     });
+
+    // concluir / refazer
+    card.querySelector('.btn-toggle-done').onclick = (e) => {
+      e.stopPropagation();
+      doneMap[idx] = !doneMap[idx];
+      saveDoneMap();
+      // re-render this card state quickly
+      showStudentWorkout(workout, routine);
+    };
   });
+
+  updateProgress();
 
   $('#btn-finish').onclick = async () => {
     try {
@@ -1505,6 +1597,7 @@ async function showStudentWorkout(workout, routine) {
         durationSeconds: 0,
         resolved: false
       });
+      clearDoneMap();
       toast('Treino concluído! Bom trabalho 💪', 'success');
       showStudentHome();
     } catch (e) {
@@ -1514,7 +1607,7 @@ async function showStudentWorkout(workout, routine) {
   };
 }
 
-// ---------- FINANCEIRO (PERSONAL) ----------
+
 async function renderFinanceiroTab(content) {
   let plans = [];
   let students = [];
