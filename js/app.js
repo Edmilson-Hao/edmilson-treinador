@@ -4,7 +4,7 @@
 
 import { firebaseConfig } from './firebase-config.js';
 import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEmail, logout, createStudentAccount } from './shared/auth.js';
-import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, createExercise, updateExercise, getRoutinesOfStudent, createRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, createPlan, getPlansOfStudent, markPlanPaid } from './shared/db.js';
+import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, createExercise, updateExercise, getRoutinesOfStudent, createRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan } from './shared/db.js';
 import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, confirmDialog, generateInviteCode } from './shared/utils.js';
 
 // Captura erros de rate-limit e mostra toast amigável
@@ -260,6 +260,7 @@ async function showPersonalHome() {
       <button class="tab active" data-tab="inicio">Início</button>
       <button class="tab" data-tab="alunos">Alunos</button>
       <button class="tab" data-tab="exercicios">Exercícios</button>
+      <button class="tab" data-tab="financeiro">Financeiro</button>
       <button class="tab" data-tab="feedbacks">Feedbacks</button>
     </div>
 
@@ -320,9 +321,17 @@ async function renderPersonalTab(tab, students, stats) {
           <div class="icon">💬</div>
           <div class="label">Feedbacks</div>
         </div>
+        <div class="action-item" id="act-financeiro">
+          <div class="icon">💰</div>
+          <div class="label">Financeiro</div>
+        </div>
         <div class="action-item" id="act-students">
           <div class="icon">👥</div>
           <div class="label">Ver alunos</div>
+        </div>
+        <div class="action-item" id="act-pix">
+          <div class="icon">🔑</div>
+          <div class="label">Chave PIX</div>
         </div>
       </div>
     `;
@@ -331,22 +340,18 @@ async function renderPersonalTab(tab, students, stats) {
       navigator.clipboard.writeText(state.profile.inviteCode || '');
       toast('Código copiado!', 'success');
     });
+    const goTab = (name) => {
+      $$('.tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.tab === name);
+      });
+      renderPersonalTab(name, students, stats);
+    };
     $('#act-add-student').onclick = () => showAddStudentModal();
-    $('#act-exercises').onclick = () => {
-      $$('.tab').forEach(t => t.classList.remove('active'));
-      $$('.tab')[2].classList.add('active');
-      renderPersonalTab('exercicios', students, stats);
-    };
-    $('#act-feedbacks').onclick = () => {
-      $$('.tab').forEach(t => t.classList.remove('active'));
-      $$('.tab')[3].classList.add('active');
-      renderPersonalTab('feedbacks', students, stats);
-    };
-    $('#act-students').onclick = () => {
-      $$('.tab').forEach(t => t.classList.remove('active'));
-      $$('.tab')[1].classList.add('active');
-      renderPersonalTab('alunos', students, stats);
-    };
+    $('#act-exercises').onclick = () => goTab('exercicios');
+    $('#act-feedbacks').onclick = () => goTab('feedbacks');
+    $('#act-students').onclick = () => goTab('alunos');
+    $('#act-financeiro')?.addEventListener('click', () => goTab('financeiro'));
+    $('#act-pix')?.addEventListener('click', () => showPixKeyModal());
   }
 
   if (tab === 'alunos') {
@@ -380,6 +385,11 @@ async function renderPersonalTab(tab, students, stats) {
 
   if (tab === 'exercicios') {
     await renderExercisesTab(content);
+  }
+
+  if (tab === 'financeiro') {
+    await renderFinanceiroTab(content);
+    return;
   }
 
   if (tab === 'feedbacks') {
@@ -559,7 +569,7 @@ async function showStudentDetail(student) {
     <header class="app-header">
       <button class="icon-btn" id="btn-back">←</button>
       <div class="title" style="flex:1;text-align:center">${student.name}</div>
-      <div style="width:40px"></div>
+      <button class="icon-btn" id="btn-home" title="Início">🏠</button>
     </header>
     <div class="tabs">
       <button class="tab active" data-tab="rotinas">Rotinas</button>
@@ -570,6 +580,7 @@ async function showStudentDetail(student) {
   `;
 
   $('#btn-back').onclick = () => showPersonalHome();
+  $('#btn-home')?.addEventListener('click', () => showPersonalHome());
 
   $$('.tab').forEach(tab => {
     tab.onclick = () => {
@@ -724,8 +735,8 @@ function showCreatePlan(student) {
       <input type="number" class="form-input" id="p-value" placeholder="150.00" step="0.01">
     </div>
     <div class="form-group">
-      <label class="form-label">Chave PIX</label>
-      <input type="text" class="form-input" id="p-pix" placeholder="sua-chave-pix">
+      <label class="form-label">Chave PIX (opcional — usa a padrão se vazio)</label>
+      <input type="text" class="form-input" id="p-pix" placeholder="Deixe vazio para usar sua chave padrão">
     </div>
     <div class="form-group">
       <label class="form-label">Vencimento</label>
@@ -749,7 +760,8 @@ function showCreatePlan(student) {
       studentId: student.id,
       name,
       value,
-      pixKey: $('#p-pix').value.trim(),
+      status: 'pendente',
+      pixKey: $('#p-pix').value.trim() || state.profile.pixKey || '',
       dueDate: due
     });
     toast('Plano criado', 'success');
@@ -998,13 +1010,28 @@ function showEditSets(ex, idx, workout, routine, student) {
 async function showStudentHome() {
   let routines = [];
   let completed = [];
+  let plans = [];
   try {
     routines = await getRoutinesOfStudent(state.user.uid);
     completed = await getCompletedByStudent(state.user.uid, 5);
+    plans = await getPlansOfStudent(state.user.uid);
+    if (state.profile.personalId) {
+      const personal = await getUser(state.profile.personalId);
+      if (personal?.pixKey) state.profile.personalPixKey = personal.pixKey;
+    }
   } catch (e) {
     console.error(e);
     toast('Erro ao carregar treinos.', 'error');
   }
+
+  // Alerta de vencimento (5 dias antes)
+  const now = Date.now();
+  const dueSoon = plans.filter(p => {
+    if (!p.dueDate || p.status === 'pago') return false;
+    const due = p.dueDate.toMillis ? p.dueDate.toMillis() : new Date(p.dueDate).getTime();
+    const days = (due - now) / (1000 * 60 * 60 * 24);
+    return days <= 5;
+  });
 
   const app = $('#app');
   app.innerHTML = `
@@ -1014,82 +1041,185 @@ async function showStudentHome() {
         <button class="icon-btn" id="btn-logout" title="Sair">⎋</button>
       </div>
     </header>
-    <div class="page" style="padding-bottom:80px">
-      <div class="card note note-accent">
-        Olá, <strong>${state.profile.name}</strong>! Vamos treinar?
-      </div>
-      <div class="page-title">Rotinas ativas</div>
-      <div id="student-routines"></div>
-      <div class="page-title" style="margin-top:24px">Últimos treinos</div>
-      <div id="student-history"></div>
-    </div>
+    <div class="page" style="padding-bottom:80px" id="student-main"></div>
     <nav class="bottom-nav">
-      <button class="nav-item active" data-nav="treinos">
+      <button class="nav-item active" data-nav="inicio">
+        <span>🏠</span><span>Início</span>
+      </button>
+      <button class="nav-item" data-nav="treinos">
         <span>🏋️</span><span>Treinos</span>
+      </button>
+      <button class="nav-item" data-nav="financeiro">
+        <span>💰</span><span>Financeiro</span>
       </button>
       <button class="nav-item" data-nav="historico">
         <span>📊</span><span>Histórico</span>
-      </button>
-      <button class="nav-item" data-nav="perfil">
-        <span>👤</span><span>Perfil</span>
       </button>
     </nav>
   `;
 
   $('#btn-logout').onclick = () => logout();
 
+  const renderNav = (nav) => {
+    $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.nav === nav));
+    const main = $('#student-main');
+    if (nav === 'inicio' || nav === 'treinos') {
+      main.innerHTML = `
+        <div class="card note note-accent">
+          Olá, <strong>${state.profile.name}</strong>! Vamos treinar?
+        </div>
+        ${dueSoon.length ? `<div class="card note" style="border-color:var(--warning);margin-bottom:12px">
+          ⚠️ Você tem ${dueSoon.length} pagamento(s) próximo(s) do vencimento. Veja em Financeiro.
+        </div>` : ''}
+        <div class="page-title">Rotinas ativas</div>
+        <div id="student-routines"></div>
+      `;
+      fillStudentRoutines(routines);
+    } else if (nav === 'financeiro') {
+      renderStudentFinance(main, plans);
+    } else if (nav === 'historico') {
+      renderStudentHistory(main, completed);
+    }
+  };
+
+  $$('.nav-item').forEach(n => {
+    n.onclick = () => renderNav(n.dataset.nav);
+  });
+  renderNav('inicio');
+}
+
+async function fillStudentRoutines(routines) {
   const rList = $('#student-routines');
+  if (!rList) return;
   if (routines.length === 0) {
     rList.innerHTML = `<div class="empty"><p>Nenhuma rotina atribuída ainda</p></div>`;
-  } else {
-    for (const r of routines) {
-      const workouts = await getWorkoutsOfRoutine(r.id);
-      const card = el('div', { class: 'card' }, [
-        el('div', { style: 'font-weight:700;color:var(--accent);margin-bottom:8px', text: r.name }),
-        ...workouts.map(w => el('div', {
-          class: 'student-card',
-          style: 'margin-bottom:8px',
-          onClick: () => showStudentWorkout(w, r)
-        }, [
-          el('div', { class: 'student-info' }, [
-            el('div', { class: 'student-name', text: w.name }),
-            el('div', { class: 'student-meta', text: `${(w.exercises||[]).length} exercícios` })
-          ]),
-          el('div', { html: '›', style: 'color:var(--accent)' })
-        ]))
-      ]);
-      rList.appendChild(card);
-    }
+    return;
   }
+  rList.innerHTML = '';
+  for (const r of routines) {
+    const workouts = await getWorkoutsOfRoutine(r.id);
+    const card = el('div', { class: 'card' }, [
+      el('div', { style: 'font-weight:700;color:var(--accent);margin-bottom:8px', text: r.name }),
+      ...workouts.map(w => el('div', {
+        class: 'student-card',
+        style: 'margin-bottom:8px',
+        onClick: () => showStudentWorkout(w, r)
+      }, [
+        el('div', { class: 'student-info' }, [
+          el('div', { class: 'student-name', text: w.name }),
+          el('div', { class: 'student-meta', text: `${(w.exercises||[]).length} exercícios` })
+        ]),
+        el('div', { html: '›', style: 'color:var(--accent)' })
+      ]))
+    ]);
+    rList.appendChild(card);
+  }
+}
 
+function renderStudentHistory(main, completed) {
+  main.innerHTML = `<div class="page-title">Histórico de treinos</div><div id="student-history"></div>`;
   const hList = $('#student-history');
-  if (completed.length === 0) {
-    hList.innerHTML = `<p class="text-muted" style="font-size:0.9rem">Nenhum treino concluído ainda</p>`;
-  } else {
-    completed.forEach(c => {
-      hList.appendChild(el('div', { class: 'card' }, [
-        el('div', { style: 'font-weight:600', text: c.workoutName || 'Treino' }),
-        el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) })
-      ]));
-    });
+  if (!completed.length) {
+    hList.innerHTML = `<p class="text-muted">Nenhum treino concluído ainda</p>`;
+    return;
   }
+  completed.forEach(c => {
+    const diffLabel = { facil: 'Fácil', moderado: 'Moderado', intenso: 'Intenso', leve: 'Leve', moderada: 'Moderada', intensa: 'Intensa' };
+    hList.appendChild(el('div', { class: 'card' }, [
+      el('div', { style: 'font-weight:600', text: c.workoutName || 'Treino' }),
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) }),
+      c.intensity ? el('div', { style: 'font-size:0.85rem;margin-top:4px', text: `Intensidade: ${diffLabel[c.intensity] || c.intensity}` }) : null,
+      c.exercisesPerformed?.length ? el('div', { class: 'text-muted', style: 'font-size:0.8rem;margin-top:4px', text: `${c.exercisesPerformed.length} exercícios registrados` }) : null
+    ]));
+  });
+}
+
+function renderStudentFinance(main, plans) {
+  const pix = state.profile.personalPixKey || '';
+  main.innerHTML = `
+    <div class="page-title">Financeiro</div>
+    ${pix ? `<div class="card"><div class="card-title">Chave PIX do personal</div>
+      <div style="word-break:break-all;font-weight:600;color:var(--accent)">${pix}</div>
+      <button class="btn btn-sm btn-outline" id="btn-copy-pix" style="margin-top:8px">Copiar PIX</button>
+    </div>` : `<div class="card note">Seu personal ainda não cadastrou a chave PIX.</div>`}
+    <div class="page-title" style="margin-top:16px">Seus planos</div>
+    <div id="student-plans"></div>
+  `;
+  $('#btn-copy-pix')?.addEventListener('click', () => {
+    navigator.clipboard.writeText(pix);
+    toast('PIX copiado!', 'success');
+  });
+  const list = $('#student-plans');
+  if (!plans.length) {
+    list.innerHTML = `<div class="empty"><p>Nenhum plano cadastrado</p></div>`;
+    return;
+  }
+  const statusLabel = {
+    pendente: 'A pagar',
+    ativo: 'A pagar',
+    aguardando: 'Aguardando confirmação',
+    pago: 'Pago',
+    recusado: 'Recusado'
+  };
+  plans.forEach(pl => {
+    const due = pl.dueDate ? formatDate(pl.dueDate) : '—';
+    const st = pl.status || 'pendente';
+    const card = el('div', { class: 'card' }, [
+      el('div', { style: 'display:flex;justify-content:space-between;align-items:center' }, [
+        el('div', { style: 'font-weight:700', text: pl.name }),
+        el('span', { class: 'badge', text: statusLabel[st] || st })
+      ]),
+      el('div', { class: 'text-muted', style: 'font-size:0.9rem;margin-top:6px', text: `R$ ${Number(pl.value||0).toFixed(2)} · Vence: ${due}` }),
+      pl.pixKey ? el('div', { style: 'font-size:0.8rem;margin-top:4px', text: `PIX: ${pl.pixKey}` }) : null
+    ]);
+    if (st === 'pendente' || st === 'ativo' || st === 'recusado') {
+      const btn = el('button', {
+        class: 'btn btn-primary btn-block',
+        style: 'margin-top:12px',
+        text: 'Já paguei',
+        onClick: async () => {
+          await studentClaimPaid(pl.id);
+          toast('Sinalizado! Aguarde o personal confirmar.', 'success');
+          showStudentHome();
+        }
+      });
+      card.appendChild(btn);
+    }
+    list.appendChild(card);
+  });
 }
 
 async function showStudentWorkout(workout, routine) {
   const app = $('#app');
   const exercises = workout.exercises || [];
 
+  // estado editável por exercício
+  const performed = exercises.map(ex => ({
+    name: ex.name,
+    exerciseId: ex.exerciseId || null,
+    videoUrl: ex.videoUrl || '',
+    difficulty: 'moderado',
+    sets: (ex.sets || []).map(s => ({
+      reps: s.reps || 0,
+      weight: s.weight || 0,
+      rest: s.rest || 60
+    }))
+  }));
+
   app.innerHTML = `
     <header class="app-header">
-      <button class="icon-btn" id="btn-back">←</button>
+      <button class="icon-btn" id="btn-home" title="Início">🏠</button>
       <div class="title" style="flex:1;text-align:center">${workout.name}</div>
-      <div style="width:40px"></div>
+      <button class="icon-btn" id="btn-back">←</button>
     </header>
     <div class="page" style="padding-bottom:100px">
+      <div class="card note" style="font-size:0.85rem">
+        Ajuste a <strong>carga</strong> e as <strong>reps</strong> que você realmente usou e marque a dificuldade de cada exercício.
+      </div>
       <div id="workout-exs"></div>
       <div class="card" style="margin-top:20px">
         <div class="form-group">
-          <label class="form-label">Como foi o treino?</label>
+          <label class="form-label">Como foi o treino no geral?</label>
           <select class="form-select" id="intensity">
             <option value="leve">Leve</option>
             <option value="moderada" selected>Moderada</option>
@@ -1097,7 +1227,7 @@ async function showStudentWorkout(workout, routine) {
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">Feedback (opcional)</label>
+          <label class="form-label">Feedback geral (opcional)</label>
           <textarea class="form-textarea" id="feedback" placeholder="Como se sentiu, dores, dúvidas..."></textarea>
         </div>
         <button class="btn btn-success btn-block" id="btn-finish">Concluir treino</button>
@@ -1105,45 +1235,231 @@ async function showStudentWorkout(workout, routine) {
     </div>
   `;
 
+  $('#btn-home').onclick = () => showStudentHome();
   $('#btn-back').onclick = () => showStudentHome();
 
   const list = $('#workout-exs');
-  exercises.forEach((ex, idx) => {
-    const setsHtml = (ex.sets || []).map((s, i) => `
-      <div class="set-row">
-        <div class="set-num">${i + 1}</div>
-        <div class="set-info">${s.reps} reps · descanso ${s.rest || '—'}s</div>
-        <div class="set-value">${s.weight || '0'} kg</div>
+  performed.forEach((ex, idx) => {
+    const card = el('div', { class: 'card', id: `ex-card-${idx}` });
+    card.innerHTML = `
+      <div style="font-weight:600;margin-bottom:8px">${ex.name}</div>
+      ${ex.videoUrl ? `<div class="video-wrap"><iframe src="${videoToEmbed(ex.videoUrl)}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen frameborder="0"></iframe></div>` : '<p class="text-muted" style="font-size:0.85rem">Sem vídeo</p>'}
+      <div class="form-group" style="margin-top:12px">
+        <label class="form-label">Dificuldade deste exercício</label>
+        <div class="diff-row" data-ex="${idx}">
+          <button type="button" class="btn btn-sm btn-outline diff-btn" data-d="facil">Fácil</button>
+          <button type="button" class="btn btn-sm btn-primary diff-btn" data-d="moderado">Moderado</button>
+          <button type="button" class="btn btn-sm btn-outline diff-btn" data-d="intenso">Intenso</button>
+        </div>
       </div>
-    `).join('');
+      <div class="sets-edit" data-ex="${idx}"></div>
+    `;
+    list.appendChild(card);
 
-    list.appendChild(el('div', { class: 'card' }, [
-      el('div', { style: 'font-weight:600;margin-bottom:8px', text: ex.name }),
-      ex.videoUrl ? el('div', { class: 'video-wrap' }, [
-        el('iframe', { src: videoToEmbed(ex.videoUrl), allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share', allowfullscreen: true, frameborder: '0', referrerpolicy: 'strict-origin-when-cross-origin' })
-      ]) : el('p', { class: 'text-muted', style: 'font-size:0.85rem', text: 'Sem vídeo' }),
-      el('div', { html: setsHtml })
-    ]));
+    const setsEl = card.querySelector('.sets-edit');
+    ex.sets.forEach((s, si) => {
+      const row = document.createElement('div');
+      row.className = 'set-row';
+      row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px';
+      row.innerHTML = `
+        <div class="set-num">${si + 1}</div>
+        <input type="number" class="form-input" style="flex:1" data-field="reps" data-ex="${idx}" data-set="${si}" value="${s.reps}" placeholder="Reps" min="0">
+        <input type="number" class="form-input" style="flex:1" data-field="weight" data-ex="${idx}" data-set="${si}" value="${s.weight}" placeholder="Kg" min="0" step="0.5">
+      `;
+      setsEl.appendChild(row);
+    });
+
+    card.querySelectorAll('.diff-btn').forEach(btn => {
+      btn.onclick = () => {
+        performed[idx].difficulty = btn.dataset.d;
+        card.querySelectorAll('.diff-btn').forEach(b => {
+          b.classList.toggle('btn-primary', b.dataset.d === btn.dataset.d);
+          b.classList.toggle('btn-outline', b.dataset.d !== btn.dataset.d);
+        });
+      };
+    });
+
+    card.querySelectorAll('input[data-field]').forEach(inp => {
+      inp.onchange = inp.oninput = () => {
+        const ei = +inp.dataset.ex;
+        const si = +inp.dataset.set;
+        const field = inp.dataset.field;
+        performed[ei].sets[si][field] = parseFloat(inp.value) || 0;
+      };
+    });
   });
 
   $('#btn-finish').onclick = async () => {
-    const intensity = $('#intensity').value;
-    const feedback = $('#feedback').value.trim();
-    await saveCompletedWorkout({
-      workoutId: workout.id,
-      workoutName: workout.name,
-      studentId: state.user.uid,
-      studentName: state.profile.name,
-      personalId: state.profile.personalId,
-      intensity,
-      feedback,
-      startedAt: firebase.firestore.Timestamp.now(),
-      durationSeconds: 0,
-      resolved: false
-    });
-    toast('Treino concluído! Bom trabalho 💪', 'success');
-    showStudentHome();
+    try {
+      const intensity = $('#intensity').value;
+      const feedback = $('#feedback').value.trim();
+      await saveCompletedWorkout({
+        workoutId: workout.id,
+        workoutName: workout.name,
+        routineId: routine?.id || null,
+        studentId: state.user.uid,
+        studentName: state.profile.name,
+        personalId: state.profile.personalId,
+        intensity,
+        feedback,
+        exercisesPerformed: performed,
+        startedAt: firebase.firestore.Timestamp.now(),
+        durationSeconds: 0,
+        resolved: false
+      });
+      toast('Treino concluído! Bom trabalho 💪', 'success');
+      showStudentHome();
+    } catch (e) {
+      console.error(e);
+      toast(e.message || 'Erro ao salvar treino', 'error');
+    }
   };
+}
+
+// ---------- FINANCEIRO (PERSONAL) ----------
+async function renderFinanceiroTab(content) {
+  let plans = [];
+  try {
+    plans = await getPlansOfPersonal(state.user.uid);
+  } catch (e) {
+    console.error(e);
+    toast('Erro ao carregar financeiro', 'error');
+  }
+
+  const pending = plans.filter(p => p.status === 'aguardando');
+  const open = plans.filter(p => p.status === 'pendente' || p.status === 'ativo');
+  const paid = plans.filter(p => p.status === 'pago');
+
+  content.innerHTML = `
+    <div class="card">
+      <div class="card-title">Chave PIX padrão</div>
+      <div style="word-break:break-all">${state.profile.pixKey || '<span class="text-muted">Não cadastrada</span>'}</div>
+      <button class="btn btn-sm btn-outline" id="btn-edit-pix" style="margin-top:8px">Editar PIX</button>
+    </div>
+    ${pending.length ? `<div class="card note note-accent"><strong>${pending.length}</strong> pagamento(s) aguardando sua confirmação</div>` : ''}
+    <div class="page-title">Aguardando confirmação</div>
+    <div id="fin-pending"></div>
+    <div class="page-title" style="margin-top:16px">Em aberto</div>
+    <div id="fin-open"></div>
+    <div class="page-title" style="margin-top:16px">Pagos</div>
+    <div id="fin-paid"></div>
+  `;
+
+  $('#btn-edit-pix').onclick = () => showPixKeyModal();
+
+  const renderPlanCard = (pl, actions) => {
+    const due = pl.dueDate ? formatDate(pl.dueDate) : '—';
+    const card = el('div', { class: 'card' }, [
+      el('div', { style: 'font-weight:700', text: pl.name }),
+      el('div', { class: 'text-muted', style: 'font-size:0.85rem', text: `Aluno ID: ${pl.studentId?.slice(0, 8)}…` }),
+      el('div', { style: 'margin-top:6px', text: `R$ ${Number(pl.value || 0).toFixed(2)} · Vence: ${due}` }),
+      el('div', { class: 'badge', style: 'margin-top:6px', text: pl.status })
+    ]);
+    if (actions) card.appendChild(actions);
+    return card;
+  };
+
+  const pendEl = $('#fin-pending');
+  if (!pending.length) pendEl.innerHTML = `<p class="text-muted" style="font-size:0.85rem">Nenhum</p>`;
+  else pending.forEach(pl => {
+    const actions = el('div', { style: 'display:flex;gap:8px;margin-top:12px' }, [
+      el('button', {
+        class: 'btn btn-success btn-sm',
+        text: 'Confirmar pago',
+        onClick: async () => {
+          await markPlanPaid(pl.id);
+          toast('Pagamento confirmado', 'success');
+          renderFinanceiroTab(content);
+        }
+      }),
+      el('button', {
+        class: 'btn btn-outline btn-sm',
+        text: 'Recusar',
+        onClick: async () => {
+          await rejectPlanClaim(pl.id);
+          toast('Sinalização recusada', 'success');
+          renderFinanceiroTab(content);
+        }
+      })
+    ]);
+    pendEl.appendChild(renderPlanCard(pl, actions));
+  });
+
+  const openEl = $('#fin-open');
+  if (!open.length) openEl.innerHTML = `<p class="text-muted" style="font-size:0.85rem">Nenhum</p>`;
+  else open.forEach(pl => openEl.appendChild(renderPlanCard(pl)));
+
+  const paidEl = $('#fin-paid');
+  if (!paid.length) paidEl.innerHTML = `<p class="text-muted" style="font-size:0.85rem">Nenhum</p>`;
+  else paid.forEach(pl => paidEl.appendChild(renderPlanCard(pl)));
+}
+
+function showPixKeyModal() {
+  const html = `
+    <div class="form-group">
+      <label class="form-label">Sua chave PIX (visível aos alunos)</label>
+      <input type="text" class="form-input" id="pix-input" value="${state.profile.pixKey || ''}" placeholder="CPF, e-mail, telefone ou chave aleatória">
+    </div>
+    <button class="btn btn-primary btn-block" id="btn-save-pix">Salvar</button>
+  `;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `<div class="modal"><div class="modal-header"><div class="modal-title">Chave PIX</div><button class="icon-btn" id="close-modal">✕</button></div>${html}</div>`;
+  document.body.appendChild(overlay);
+  $('#close-modal').onclick = () => overlay.remove();
+  $('#btn-save-pix').onclick = async () => {
+    const pixKey = $('#pix-input').value.trim();
+    await updateUser(state.user.uid, { pixKey });
+    state.profile.pixKey = pixKey;
+    toast('Chave PIX salva', 'success');
+    overlay.remove();
+    showPersonalHome();
+  };
+}
+
+// Relatório de treino do aluno (personal)
+async function showCompletedReport(completed) {
+  const app = $('#app');
+  const performed = completed.exercisesPerformed || [];
+  const diffLabel = { facil: 'Fácil', moderado: 'Moderado', intenso: 'Intenso', leve: 'Leve', moderada: 'Moderada', intensa: 'Intensa' };
+
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-home">🏠</button>
+      <div class="title" style="flex:1;text-align:center">Relatório</div>
+      <button class="icon-btn" id="btn-back">←</button>
+    </header>
+    <div class="page">
+      <div class="card">
+        <div style="font-weight:700;font-size:1.1rem">${completed.workoutName || 'Treino'}</div>
+        <div class="text-muted" style="font-size:0.85rem">${completed.studentName || ''} · ${formatDateTime(completed.finishedAt)}</div>
+        <div style="margin-top:8px">Intensidade geral: <strong>${diffLabel[completed.intensity] || completed.intensity || '—'}</strong></div>
+        ${completed.feedback ? `<div style="margin-top:8px">${completed.feedback}</div>` : ''}
+      </div>
+      <div class="page-title">Exercícios realizados</div>
+      <div id="report-exs"></div>
+    </div>
+  `;
+  $('#btn-home').onclick = () => showPersonalHome();
+  $('#btn-back').onclick = () => showPersonalHome();
+
+  const list = $('#report-exs');
+  if (!performed.length) {
+    list.innerHTML = `<p class="text-muted">Sem detalhamento de séries neste treino (versão antiga).</p>`;
+    return;
+  }
+  performed.forEach(ex => {
+    const setsHtml = (ex.sets || []).map((s, i) =>
+      `<div class="set-row"><div class="set-num">${i+1}</div><div class="set-info">${s.reps} reps</div><div class="set-value">${s.weight || 0} kg</div></div>`
+    ).join('');
+    list.appendChild(el('div', { class: 'card' }, [
+      el('div', { style: 'display:flex;justify-content:space-between' }, [
+        el('div', { style: 'font-weight:600', text: ex.name }),
+        el('span', { class: 'badge', text: diffLabel[ex.difficulty] || ex.difficulty || '—' })
+      ]),
+      el('div', { html: setsHtml })
+    ]));
+  });
 }
 
 // ---------- START ----------

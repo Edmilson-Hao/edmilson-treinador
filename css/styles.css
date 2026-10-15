@@ -832,3 +832,11 @@ body {
   background: var(--border);
   border-radius: 4px;
 }
+
+
+.diff-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.diff-row .btn { flex: 1; min-width: 80px; }

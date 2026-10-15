@@ -256,7 +256,46 @@ export async function markPlanPaid(id) {
   guard('markPaid', 10, 15000);
   await col('plans').doc(id).update({
     status: 'pago',
-    paidAt: firebase.firestore.FieldValue.serverTimestamp()
+    paidAt: firebase.firestore.FieldValue.serverTimestamp(),
+    studentClaimedAt: null
+  });
+}
+
+export async function updatePlan(id, data) {
+  guard('updatePlan', 12, 15000);
+  await col('plans').doc(id).update(data);
+}
+
+/** Aluno sinaliza que pagou */
+export async function studentClaimPaid(id) {
+  guard('claimPaid', 5, 30000);
+  await col('plans').doc(id).update({
+    status: 'aguardando',
+    studentClaimedAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+}
+
+/** Personal rejeita o sinal de pagamento do aluno */
+export async function rejectPlanClaim(id) {
+  guard('rejectPaid', 10, 15000);
+  await col('plans').doc(id).update({
+    status: 'pendente',
+    studentClaimedAt: null
+  });
+}
+
+/** Todos os planos do personal (financeiro) */
+export async function getPlansOfPersonal(personalId) {
+  guard('listPlansPersonal', 6, 15000);
+  const snap = await col('plans')
+    .where('personalId', '==', personalId)
+    .limit(LIMITS.plans * 5)
+    .get();
+  const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  return list.sort((a, b) => {
+    const ta = a.dueDate?.toMillis?.() || 0;
+    const tb = b.dueDate?.toMillis?.() || 0;
+    return ta - tb;
   });
 }
 
