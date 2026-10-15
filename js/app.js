@@ -4,7 +4,7 @@
 
 import { firebaseConfig } from './firebase-config.js';
 import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEmail, logout, createStudentAccount } from './shared/auth.js';
-import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, createExercise, updateExercise, getRoutinesOfStudent, createRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan } from './shared/db.js';
+import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan } from './shared/db.js';
 import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, confirmDialog, generateInviteCode } from './shared/utils.js';
 
 // Captura erros de rate-limit e mostra toast amigável
@@ -260,7 +260,7 @@ async function showPersonalHome() {
       <button class="tab active" data-tab="inicio">Início</button>
       <button class="tab" data-tab="alunos">Alunos</button>
       <button class="tab" data-tab="exercicios">Exercícios</button>
-      <button class="tab" data-tab="financeiro">Financeiro</button>
+      <button class="tab" data-tab="financeiro" id="tab-financeiro">Financeiro</button>
       <button class="tab" data-tab="feedbacks">Feedbacks</button>
     </div>
 
@@ -278,6 +278,14 @@ async function showPersonalHome() {
   });
 
   renderPersonalTab('inicio', students, stats);
+  // Badge de pagamentos aguardando
+  getPlansOfPersonal(state.user.uid).then(plans => {
+    const n = plans.filter(p => p.status === 'aguardando').length;
+    const tab = $('#tab-financeiro');
+    if (tab && n > 0) {
+      tab.innerHTML = `Financeiro <span class="badge" style="background:var(--accent);color:#000;margin-left:4px">${n}</span>`;
+    }
+  }).catch(() => {});
 }
 
 async function renderPersonalTab(tab, students, stats) {
@@ -453,12 +461,29 @@ async function renderExercisesTab(content) {
   }
   exercises.forEach(ex => {
     const card = el('div', { class: 'card' }, [
-      el('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start' }, [
-        el('div', {}, [
+      el('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:8px' }, [
+        el('div', { style: 'flex:1' }, [
           el('div', { style: 'font-weight:600', text: ex.name }),
           el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: ex.muscleGroup || '' })
         ]),
-        el('button', { class: 'btn btn-sm btn-outline', text: 'Editar', onClick: () => showExerciseForm(ex) })
+        el('div', { style: 'display:flex;gap:6px;flex-shrink:0' }, [
+          el('button', { class: 'btn btn-sm btn-outline', text: 'Editar', onClick: () => showExerciseForm(ex) }),
+          el('button', {
+            class: 'btn btn-sm btn-outline',
+            text: 'Excluir',
+            style: 'color:var(--danger);border-color:var(--danger)',
+            onClick: async () => {
+              if (!confirm(`Excluir "${ex.name}"?`)) return;
+              try {
+                await deleteExercise(ex.id);
+                toast('Exercício excluído', 'success');
+                renderExercisesTab(content);
+              } catch (e) {
+                toast(e.message || 'Erro ao excluir', 'error');
+              }
+            }
+          })
+        ])
       ])
     ]);
     list.appendChild(card);
@@ -628,47 +653,76 @@ function renderStudentTab(tab, student, routines, plans, completed) {
     }
     content.innerHTML = '';
     completed.forEach(c => {
-      content.appendChild(el('div', { class: 'card' }, [
+      const m = calcWorkoutMetrics(c);
+      content.appendChild(el('div', { class: 'card', style: 'cursor:pointer', onClick: () => showCompletedReport(c) }, [
         el('div', { style: 'font-weight:600', text: c.workoutName || 'Treino' }),
         el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) }),
-        el('div', { style: 'margin-top:6px', text: `Intensidade: ${c.intensity || '—'}` }),
-        c.feedback ? el('div', { class: 'text-muted', style: 'font-size:0.85rem;margin-top:4px', text: c.feedback }) : null
+        el('div', { style: 'display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;font-size:0.85rem' }, [
+          el('span', { class: 'badge badge-muted', text: `${m.totalSets} séries` }),
+          el('span', { class: 'badge badge-muted', text: `${m.tonnage} kg·rep` }),
+          el('span', { class: 'badge badge-muted', text: c.intensity || '—' })
+        ]),
+        el('div', { style: 'font-size:0.8rem;color:var(--accent);margin-top:6px', text: 'Ver relatório completo ›' })
       ]));
     });
   }
 
   if (tab === 'plano') {
     content.innerHTML = `
-      <button class="btn btn-primary btn-block" id="btn-new-plan" style="margin-bottom:16px">+ Adicionar plano</button>
+      <button class="btn btn-primary btn-block" id="btn-new-plan" style="margin-bottom:16px">+ Nova fatura</button>
       <div id="plans-list"></div>
     `;
     $('#btn-new-plan').onclick = () => showCreatePlan(student);
     const list = $('#plans-list');
     if (plans.length === 0) {
-      list.innerHTML = `<div class="empty"><p>Nenhum plano cadastrado</p></div>`;
+      list.innerHTML = `<div class="empty"><p>Nenhuma fatura cadastrada</p></div>`;
       return;
     }
     plans.forEach(p => {
-      list.appendChild(el('div', { class: 'card' }, [
+      const st = p.status || 'pendente';
+      const statusLabel = { pendente:'A pagar', ativo:'A pagar', aguardando:'🔔 Aguardando', pago:'Pago', recusado:'Recusado' };
+      const card = el('div', {
+        class: 'card',
+        style: st === 'aguardando' ? 'border:1px solid var(--accent)' : ''
+      }, [
+        el('div', { style: 'font-size:0.75rem;color:var(--muted);text-transform:uppercase', text: 'Fatura' }),
         el('div', { style: 'display:flex;justify-content:space-between' }, [
           el('div', { style: 'font-weight:600', text: p.name }),
-          el('span', { class: `badge ${p.status==='pago'?'badge-success':''}`, text: p.status })
+          el('span', { class: `badge ${st==='pago'?'badge-success':''}`, text: statusLabel[st] || st })
         ]),
-        el('div', { class: 'text-muted', style: 'font-size:0.85rem;margin-top:6px' }, [
-          document.createTextNode(`R$ ${Number(p.value).toFixed(2)} · Venc: ${formatDate(p.dueDate)}`)
-        ]),
-        p.pixKey ? el('div', { style: 'font-size:0.8rem;margin-top:4px', text: `PIX: ${p.pixKey}` }) : null,
-        p.status !== 'pago' ? el('button', {
+        el('div', { class: 'text-muted', style: 'font-size:0.85rem;margin-top:6px', text: `R$ ${Number(p.value).toFixed(2)} · Venc: ${formatDate(p.dueDate)}` })
+      ]);
+      if (p.pixKey || state.profile.pixKey) {
+        const key = p.pixKey || state.profile.pixKey;
+        card.appendChild(el('button', {
+          class: 'btn btn-sm btn-outline',
+          style: 'margin-top:8px',
+          text: 'Copiar chave PIX',
+          onClick: () => { navigator.clipboard.writeText(key); toast('PIX copiado!', 'success'); }
+        }));
+      }
+      if (st === 'aguardando') {
+        card.appendChild(el('div', { style: 'display:flex;gap:8px;margin-top:10px' }, [
+          el('button', { class: 'btn btn-sm btn-success', text: 'Confirmar pago', onClick: async () => {
+            await markPlanPaid(p.id); toast('Confirmado', 'success'); showStudentDetail(student);
+          }}),
+          el('button', { class: 'btn btn-sm btn-outline', text: 'Recusar', onClick: async () => {
+            await rejectPlanClaim(p.id); toast('Recusado', 'success'); showStudentDetail(student);
+          }})
+        ]));
+      } else if (st !== 'pago') {
+        card.appendChild(el('button', {
           class: 'btn btn-sm btn-success',
           style: 'margin-top:10px',
           text: 'Marcar como pago',
           onClick: async () => {
             await markPlanPaid(p.id);
-            toast('Plano marcado como pago', 'success');
+            toast('Fatura marcada como paga', 'success');
             showStudentDetail(student);
           }
-        }) : null
-      ]));
+        }));
+      }
+      list.appendChild(card);
     });
   }
 }
@@ -728,7 +782,7 @@ function showCreatePlan(student) {
   const html = `
     <div class="form-group">
       <label class="form-label">Nome do plano</label>
-      <input type="text" class="form-input" id="p-name" placeholder="Mensalidade Outubro">
+      <input type="text" class="form-input" id="p-name" placeholder="Mensalidade Outubro / Fatura">
     </div>
     <div class="form-group">
       <label class="form-label">Valor (R$)</label>
@@ -746,7 +800,7 @@ function showCreatePlan(student) {
   `;
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay open';
-  overlay.innerHTML = `<div class="modal"><div class="modal-header"><div class="modal-title">Novo plano</div><button class="icon-btn" id="close-modal">✕</button></div>${html}</div>`;
+  overlay.innerHTML = `<div class="modal"><div class="modal-header"><div class="modal-title">Nova fatura</div><button class="icon-btn" id="close-modal">✕</button></div>${html}</div>`;
   document.body.appendChild(overlay);
   $('#close-modal').onclick = () => overlay.remove();
 
@@ -1063,15 +1117,43 @@ async function showStudentHome() {
   const renderNav = (nav) => {
     $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.nav === nav));
     const main = $('#student-main');
-    if (nav === 'inicio' || nav === 'treinos') {
+    if (nav === 'inicio') {
+      const openPlans = plans.filter(p => ['pendente','ativo','aguardando'].includes(p.status || 'pendente'));
       main.innerHTML = `
         <div class="card note note-accent">
-          Olá, <strong>${state.profile.name}</strong>! Vamos treinar?
+          Olá, <strong>${state.profile.name}</strong>! 💪
         </div>
-        ${dueSoon.length ? `<div class="card note" style="border-color:var(--warning);margin-bottom:12px">
-          ⚠️ Você tem ${dueSoon.length} pagamento(s) próximo(s) do vencimento. Veja em Financeiro.
+        ${dueSoon.length ? `<div class="card note" style="border-color:#f59e0b;margin-bottom:12px">
+          ⚠️ ${dueSoon.length} fatura(s) vencendo em até 5 dias — veja em Financeiro.
         </div>` : ''}
-        <div class="page-title">Rotinas ativas</div>
+        <div class="stat-row">
+          <div class="stat-card"><div class="stat-value">${routines.length}</div><div class="stat-label">Rotinas</div></div>
+          <div class="stat-card"><div class="stat-value">${completed.length}</div><div class="stat-label">Últimos treinos</div></div>
+          <div class="stat-card"><div class="stat-value">${openPlans.length}</div><div class="stat-label">Faturas abertas</div></div>
+        </div>
+        <div class="page-title">Acesso rápido</div>
+        <div class="action-grid">
+          <div class="action-item" id="go-treinos"><div class="icon">🏋️</div><div class="label">Treinos</div></div>
+          <div class="action-item" id="go-fin"><div class="icon">💰</div><div class="label">Financeiro</div></div>
+          <div class="action-item" id="go-hist"><div class="icon">📊</div><div class="label">Histórico</div></div>
+        </div>
+        <div class="page-title" style="margin-top:8px">Últimos treinos</div>
+        <div id="home-recent"></div>
+      `;
+      $('#go-treinos').onclick = () => renderNav('treinos');
+      $('#go-fin').onclick = () => renderNav('financeiro');
+      $('#go-hist').onclick = () => renderNav('historico');
+      const hr = $('#home-recent');
+      if (!completed.length) hr.innerHTML = `<p class="text-muted" style="font-size:0.85rem">Nenhum treino ainda</p>`;
+      else completed.slice(0,3).forEach(c => {
+        hr.appendChild(el('div', { class: 'card', style: 'cursor:pointer', onClick: () => showStudentCompletedDetail(c) }, [
+          el('div', { style: 'font-weight:600', text: c.workoutName || 'Treino' }),
+          el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) })
+        ]));
+      });
+    } else if (nav === 'treinos') {
+      main.innerHTML = `
+        <div class="page-title">Rotinas e treinos</div>
         <div id="student-routines"></div>
       `;
       fillStudentRoutines(routines);
@@ -1140,9 +1222,9 @@ function renderStudentFinance(main, plans) {
     <div class="page-title">Financeiro</div>
     ${pix ? `<div class="card"><div class="card-title">Chave PIX do personal</div>
       <div style="word-break:break-all;font-weight:600;color:var(--accent)">${pix}</div>
-      <button class="btn btn-sm btn-outline" id="btn-copy-pix" style="margin-top:8px">Copiar PIX</button>
+      <button class="btn btn-sm btn-outline" id="btn-copy-pix" style="margin-top:8px">Copiar chave PIX</button>
     </div>` : `<div class="card note">Seu personal ainda não cadastrou a chave PIX.</div>`}
-    <div class="page-title" style="margin-top:16px">Seus planos</div>
+    <div class="page-title" style="margin-top:16px">Suas faturas</div>
     <div id="student-plans"></div>
   `;
   $('#btn-copy-pix')?.addEventListener('click', () => {
@@ -1151,7 +1233,7 @@ function renderStudentFinance(main, plans) {
   });
   const list = $('#student-plans');
   if (!plans.length) {
-    list.innerHTML = `<div class="empty"><p>Nenhum plano cadastrado</p></div>`;
+    list.innerHTML = `<div class="empty"><p>Nenhuma fatura</p></div>`;
     return;
   }
   const statusLabel = {
@@ -1164,16 +1246,28 @@ function renderStudentFinance(main, plans) {
   plans.forEach(pl => {
     const due = pl.dueDate ? formatDate(pl.dueDate) : '—';
     const st = pl.status || 'pendente';
+    const pixKey = pl.pixKey || pix;
     const card = el('div', { class: 'card' }, [
+      el('div', { style: 'font-size:0.75rem;color:var(--muted);text-transform:uppercase', text: 'Fatura' }),
       el('div', { style: 'display:flex;justify-content:space-between;align-items:center' }, [
         el('div', { style: 'font-weight:700', text: pl.name }),
-        el('span', { class: 'badge', text: statusLabel[st] || st })
+        el('span', { class: `badge ${st==='pago'?'badge-success':''}`, text: statusLabel[st] || st })
       ]),
-      el('div', { class: 'text-muted', style: 'font-size:0.9rem;margin-top:6px', text: `R$ ${Number(pl.value||0).toFixed(2)} · Vence: ${due}` }),
-      pl.pixKey ? el('div', { style: 'font-size:0.8rem;margin-top:4px', text: `PIX: ${pl.pixKey}` }) : null
+      el('div', { class: 'text-muted', style: 'font-size:0.9rem;margin-top:6px', text: `R$ ${Number(pl.value||0).toFixed(2)} · Vence: ${due}` })
     ]);
+    if (pixKey) {
+      card.appendChild(el('button', {
+        class: 'btn btn-sm btn-outline',
+        style: 'margin-top:10px',
+        text: 'Copiar chave PIX',
+        onClick: () => {
+          navigator.clipboard.writeText(pixKey);
+          toast('PIX copiado!', 'success');
+        }
+      }));
+    }
     if (st === 'pendente' || st === 'ativo' || st === 'recusado') {
-      const btn = el('button', {
+      card.appendChild(el('button', {
         class: 'btn btn-primary btn-block',
         style: 'margin-top:12px',
         text: 'Já paguei',
@@ -1182,10 +1276,132 @@ function renderStudentFinance(main, plans) {
           toast('Sinalizado! Aguarde o personal confirmar.', 'success');
           showStudentHome();
         }
-      });
-      card.appendChild(btn);
+      }));
     }
     list.appendChild(card);
+  });
+}
+
+/** Calcula métricas de um treino concluído */
+function calcWorkoutMetrics(completed) {
+  const performed = completed.exercisesPerformed || [];
+  let totalSets = 0;
+  let tonnage = 0; // soma reps * carga
+  const byEx = performed.map(ex => {
+    const sets = ex.sets || [];
+    let exTon = 0;
+    let exSets = sets.length;
+    sets.forEach(s => {
+      const r = Number(s.reps) || 0;
+      const w = Number(s.weight) || 0;
+      exTon += r * w;
+    });
+    totalSets += exSets;
+    tonnage += exTon;
+    return { name: ex.name, sets: exSets, tonnage: exTon, difficulty: ex.difficulty, setDetails: sets };
+  });
+  return { totalSets, tonnage, byEx, exerciseCount: performed.length };
+}
+
+/** Média móvel simples dos últimos N treinos (tonelagem) */
+function movingAverage(values, window = 3) {
+  if (!values.length) return [];
+  const out = [];
+  for (let i = 0; i < values.length; i++) {
+    const slice = values.slice(Math.max(0, i - window + 1), i + 1);
+    out.push(Math.round(slice.reduce((a, b) => a + b, 0) / slice.length));
+  }
+  return out;
+}
+
+function renderStudentHistory(main, completed) {
+  // completed is newest first
+  const metricsList = completed.map(c => ({ c, m: calcWorkoutMetrics(c) }));
+  // chronological for MA (oldest first)
+  const chrono = [...metricsList].reverse();
+  const tons = chrono.map(x => x.m.tonnage);
+  const ma = movingAverage(tons, 3);
+  const maById = {};
+  chrono.forEach((x, i) => { maById[x.c.id] = ma[i]; });
+
+  main.innerHTML = `
+    <div class="page-title">Histórico completo</div>
+    ${completed.length >= 2 ? `<div class="card note" style="font-size:0.85rem">
+      Média móvel de tonelagem (últimos 3 treinos) ajuda a ver progressão de carga × reps.
+    </div>` : ''}
+    <div id="student-history"></div>
+  `;
+  const hList = $('#student-history');
+  if (!completed.length) {
+    hList.innerHTML = `<p class="text-muted">Nenhum treino concluído ainda</p>`;
+    return;
+  }
+  const diffLabel = { facil: 'Fácil', moderado: 'Moderado', intenso: 'Intenso', leve: 'Leve', moderada: 'Moderada', intensa: 'Intensa' };
+  metricsList.forEach(({ c, m }) => {
+    hList.appendChild(el('div', {
+      class: 'card',
+      style: 'cursor:pointer',
+      onClick: () => showStudentCompletedDetail(c, maById[c.id])
+    }, [
+      el('div', { style: 'font-weight:600', text: c.workoutName || 'Treino' }),
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) }),
+      el('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:0.85rem' }, [
+        el('span', { class: 'badge badge-muted', text: `${m.totalSets} séries` }),
+        el('span', { class: 'badge badge-muted', text: `${m.tonnage} kg·rep` }),
+        maById[c.id] != null ? el('span', { class: 'badge', style: 'background:var(--accent);color:#000', text: `MM3: ${maById[c.id]}` }) : null,
+        c.intensity ? el('span', { class: 'badge badge-muted', text: diffLabel[c.intensity] || c.intensity }) : null
+      ]),
+      el('div', { style: 'font-size:0.8rem;color:var(--accent);margin-top:6px', text: 'Ver detalhe completo ›' })
+    ]));
+  });
+}
+
+function showStudentCompletedDetail(completed, maValue) {
+  const m = calcWorkoutMetrics(completed);
+  const diffLabel = { facil: 'Fácil', moderado: 'Moderado', intenso: 'Intenso', leve: 'Leve', moderada: 'Moderada', intensa: 'Intensa' };
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-home">🏠</button>
+      <div class="title" style="flex:1;text-align:center">Detalhe do treino</div>
+      <button class="icon-btn" id="btn-back">←</button>
+    </header>
+    <div class="page">
+      <div class="card">
+        <div style="font-weight:700;font-size:1.1rem">${completed.workoutName || 'Treino'}</div>
+        <div class="text-muted" style="font-size:0.85rem">${formatDateTime(completed.finishedAt)}</div>
+        <div class="stat-row" style="margin-top:12px">
+          <div class="stat-card"><div class="stat-value">${m.totalSets}</div><div class="stat-label">Séries</div></div>
+          <div class="stat-card"><div class="stat-value">${m.exerciseCount}</div><div class="stat-label">Exercícios</div></div>
+          <div class="stat-card"><div class="stat-value">${m.tonnage}</div><div class="stat-label">Tonelagem</div></div>
+        </div>
+        ${maValue != null ? `<div style="margin-top:8px;font-size:0.9rem">Média móvel (3 treinos): <strong>${maValue}</strong> kg·rep</div>` : ''}
+        <div style="margin-top:8px">Intensidade: <strong>${diffLabel[completed.intensity] || completed.intensity || '—'}</strong></div>
+        ${completed.feedback ? `<div style="margin-top:8px">${completed.feedback}</div>` : ''}
+      </div>
+      <div class="page-title">Por exercício</div>
+      <div id="detail-exs"></div>
+    </div>
+  `;
+  $('#btn-home').onclick = () => showStudentHome();
+  $('#btn-back').onclick = () => showStudentHome();
+  const list = $('#detail-exs');
+  if (!m.byEx.length) {
+    list.innerHTML = `<p class="text-muted">Sem detalhamento de séries (treino antigo).</p>`;
+    return;
+  }
+  m.byEx.forEach(ex => {
+    const setsHtml = (ex.setDetails || []).map((s, i) =>
+      `<div class="set-row"><div class="set-num">${i+1}</div><div class="set-info">${s.reps} reps</div><div class="set-value">${s.weight || 0} kg</div></div>`
+    ).join('');
+    list.appendChild(el('div', { class: 'card' }, [
+      el('div', { style: 'display:flex;justify-content:space-between;gap:8px' }, [
+        el('div', { style: 'font-weight:600', text: ex.name }),
+        el('span', { class: 'badge', text: diffLabel[ex.difficulty] || ex.difficulty || '—' })
+      ]),
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem;margin:6px 0', text: `${ex.sets} séries · tonelagem ${ex.tonnage} kg·rep` }),
+      el('div', { html: setsHtml })
+    ]));
   });
 }
 
@@ -1319,16 +1535,28 @@ async function showStudentWorkout(workout, routine) {
 // ---------- FINANCEIRO (PERSONAL) ----------
 async function renderFinanceiroTab(content) {
   let plans = [];
+  let students = [];
   try {
     plans = await getPlansOfPersonal(state.user.uid);
+    students = await getStudentsOfPersonal(state.user.uid);
   } catch (e) {
     console.error(e);
     toast('Erro ao carregar financeiro', 'error');
   }
 
+  const nameById = {};
+  students.forEach(s => { nameById[s.id] = s.name; });
+
   const pending = plans.filter(p => p.status === 'aguardando');
-  const open = plans.filter(p => p.status === 'pendente' || p.status === 'ativo');
-  const paid = plans.filter(p => p.status === 'pago');
+  const filterSel = content.dataset.finFilter || 'todos';
+
+  const filtered = plans.filter(p => {
+    if (filterSel === 'todos') return true;
+    if (filterSel === 'aguardando') return p.status === 'aguardando';
+    if (filterSel === 'abertos') return p.status === 'pendente' || p.status === 'ativo';
+    if (filterSel === 'pagos') return p.status === 'pago';
+    return true;
+  });
 
   content.innerHTML = `
     <div class="card">
@@ -1336,62 +1564,100 @@ async function renderFinanceiroTab(content) {
       <div style="word-break:break-all">${state.profile.pixKey || '<span class="text-muted">Não cadastrada</span>'}</div>
       <button class="btn btn-sm btn-outline" id="btn-edit-pix" style="margin-top:8px">Editar PIX</button>
     </div>
-    ${pending.length ? `<div class="card note note-accent"><strong>${pending.length}</strong> pagamento(s) aguardando sua confirmação</div>` : ''}
-    <div class="page-title">Aguardando confirmação</div>
-    <div id="fin-pending"></div>
-    <div class="page-title" style="margin-top:16px">Em aberto</div>
-    <div id="fin-open"></div>
-    <div class="page-title" style="margin-top:16px">Pagos</div>
-    <div id="fin-paid"></div>
+    ${pending.length ? `<div class="card note note-accent" style="display:flex;align-items:center;gap:10px">
+      <span style="font-size:1.4rem">🔔</span>
+      <div><strong>${pending.length}</strong> aluno(s) sinalizaram pagamento — confirme abaixo</div>
+    </div>` : ''}
+    <div class="tabs" style="margin:12px 0" id="fin-filters">
+      <button class="tab ${filterSel==='todos'?'active':''}" data-f="todos">Todos (${plans.length})</button>
+      <button class="tab ${filterSel==='aguardando'?'active':''}" data-f="aguardando">Aguardando (${pending.length})</button>
+      <button class="tab ${filterSel==='abertos'?'active':''}" data-f="abertos">Em aberto</button>
+      <button class="tab ${filterSel==='pagos'?'active':''}" data-f="pagos">Pagos</button>
+    </div>
+    <div id="fin-list"></div>
   `;
 
   $('#btn-edit-pix').onclick = () => showPixKeyModal();
-
-  const renderPlanCard = (pl, actions) => {
-    const due = pl.dueDate ? formatDate(pl.dueDate) : '—';
-    const card = el('div', { class: 'card' }, [
-      el('div', { style: 'font-weight:700', text: pl.name }),
-      el('div', { class: 'text-muted', style: 'font-size:0.85rem', text: `Aluno ID: ${pl.studentId?.slice(0, 8)}…` }),
-      el('div', { style: 'margin-top:6px', text: `R$ ${Number(pl.value || 0).toFixed(2)} · Vence: ${due}` }),
-      el('div', { class: 'badge', style: 'margin-top:6px', text: pl.status })
-    ]);
-    if (actions) card.appendChild(actions);
-    return card;
-  };
-
-  const pendEl = $('#fin-pending');
-  if (!pending.length) pendEl.innerHTML = `<p class="text-muted" style="font-size:0.85rem">Nenhum</p>`;
-  else pending.forEach(pl => {
-    const actions = el('div', { style: 'display:flex;gap:8px;margin-top:12px' }, [
-      el('button', {
-        class: 'btn btn-success btn-sm',
-        text: 'Confirmar pago',
-        onClick: async () => {
-          await markPlanPaid(pl.id);
-          toast('Pagamento confirmado', 'success');
-          renderFinanceiroTab(content);
-        }
-      }),
-      el('button', {
-        class: 'btn btn-outline btn-sm',
-        text: 'Recusar',
-        onClick: async () => {
-          await rejectPlanClaim(pl.id);
-          toast('Sinalização recusada', 'success');
-          renderFinanceiroTab(content);
-        }
-      })
-    ]);
-    pendEl.appendChild(renderPlanCard(pl, actions));
+  $$('#fin-filters .tab').forEach(t => {
+    t.onclick = () => {
+      content.dataset.finFilter = t.dataset.f;
+      renderFinanceiroTab(content);
+    };
   });
 
-  const openEl = $('#fin-open');
-  if (!open.length) openEl.innerHTML = `<p class="text-muted" style="font-size:0.85rem">Nenhum</p>`;
-  else open.forEach(pl => openEl.appendChild(renderPlanCard(pl)));
+  const list = $('#fin-list');
+  if (!filtered.length) {
+    list.innerHTML = `<div class="empty"><p>Nenhuma fatura neste filtro</p></div>`;
+    return;
+  }
 
-  const paidEl = $('#fin-paid');
-  if (!paid.length) paidEl.innerHTML = `<p class="text-muted" style="font-size:0.85rem">Nenhum</p>`;
-  else paid.forEach(pl => paidEl.appendChild(renderPlanCard(pl)));
+  const statusLabel = {
+    pendente: 'A pagar',
+    ativo: 'A pagar',
+    aguardando: '🔔 Aguardando confirmação',
+    pago: 'Pago',
+    recusado: 'Recusado'
+  };
+
+  filtered.forEach(pl => {
+    const due = pl.dueDate ? formatDate(pl.dueDate) : '—';
+    const st = pl.status || 'pendente';
+    const isWait = st === 'aguardando';
+    const card = el('div', {
+      class: 'card',
+      style: isWait ? 'border:1px solid var(--accent);box-shadow:0 0 0 1px var(--accent)' : ''
+    }, [
+      el('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:8px' }, [
+        el('div', {}, [
+          el('div', { style: 'font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px', text: 'Fatura' }),
+          el('div', { style: 'font-weight:700', text: pl.name }),
+          el('div', { class: 'text-muted', style: 'font-size:0.85rem', text: nameById[pl.studentId] || 'Aluno' })
+        ]),
+        el('span', {
+          class: `badge ${st==='pago'?'badge-success':isWait?'':'badge-muted'}`,
+          style: isWait ? 'background:var(--accent);color:#000' : '',
+          text: statusLabel[st] || st
+        })
+      ]),
+      el('div', { style: 'margin-top:8px;font-weight:600', text: `R$ ${Number(pl.value || 0).toFixed(2)}` }),
+      el('div', { class: 'text-muted', style: 'font-size:0.85rem', text: `Vencimento: ${due}` })
+    ]);
+
+    if (isWait) {
+      card.appendChild(el('div', { style: 'display:flex;gap:8px;margin-top:12px' }, [
+        el('button', {
+          class: 'btn btn-success btn-sm',
+          text: 'Confirmar pago',
+          onClick: async () => {
+            await markPlanPaid(pl.id);
+            toast('Pagamento confirmado', 'success');
+            renderFinanceiroTab(content);
+          }
+        }),
+        el('button', {
+          class: 'btn btn-outline btn-sm',
+          text: 'Recusar',
+          onClick: async () => {
+            await rejectPlanClaim(pl.id);
+            toast('Sinalização recusada', 'success');
+            renderFinanceiroTab(content);
+          }
+        })
+      ]));
+    } else if (st === 'pendente' || st === 'ativo') {
+      card.appendChild(el('button', {
+        class: 'btn btn-sm btn-outline',
+        style: 'margin-top:10px',
+        text: 'Marcar como pago',
+        onClick: async () => {
+          await markPlanPaid(pl.id);
+          toast('Marcado como pago', 'success');
+          renderFinanceiroTab(content);
+        }
+      }));
+    }
+    list.appendChild(card);
+  });
 }
 
 function showPixKeyModal() {
@@ -1419,10 +1685,9 @@ function showPixKeyModal() {
 
 // Relatório de treino do aluno (personal)
 async function showCompletedReport(completed) {
-  const app = $('#app');
-  const performed = completed.exercisesPerformed || [];
+  const m = calcWorkoutMetrics(completed);
   const diffLabel = { facil: 'Fácil', moderado: 'Moderado', intenso: 'Intenso', leve: 'Leve', moderada: 'Moderada', intensa: 'Intensa' };
-
+  const app = $('#app');
   app.innerHTML = `
     <header class="app-header">
       <button class="icon-btn" id="btn-home">🏠</button>
@@ -1433,6 +1698,11 @@ async function showCompletedReport(completed) {
       <div class="card">
         <div style="font-weight:700;font-size:1.1rem">${completed.workoutName || 'Treino'}</div>
         <div class="text-muted" style="font-size:0.85rem">${completed.studentName || ''} · ${formatDateTime(completed.finishedAt)}</div>
+        <div class="stat-row" style="margin-top:12px">
+          <div class="stat-card"><div class="stat-value">${m.totalSets}</div><div class="stat-label">Séries</div></div>
+          <div class="stat-card"><div class="stat-value">${m.exerciseCount}</div><div class="stat-label">Exercícios</div></div>
+          <div class="stat-card"><div class="stat-value">${m.tonnage}</div><div class="stat-label">Tonelagem</div></div>
+        </div>
         <div style="margin-top:8px">Intensidade geral: <strong>${diffLabel[completed.intensity] || completed.intensity || '—'}</strong></div>
         ${completed.feedback ? `<div style="margin-top:8px">${completed.feedback}</div>` : ''}
       </div>
@@ -1444,12 +1714,12 @@ async function showCompletedReport(completed) {
   $('#btn-back').onclick = () => showPersonalHome();
 
   const list = $('#report-exs');
-  if (!performed.length) {
+  if (!m.byEx.length) {
     list.innerHTML = `<p class="text-muted">Sem detalhamento de séries neste treino (versão antiga).</p>`;
     return;
   }
-  performed.forEach(ex => {
-    const setsHtml = (ex.sets || []).map((s, i) =>
+  m.byEx.forEach(ex => {
+    const setsHtml = (ex.setDetails || []).map((s, i) =>
       `<div class="set-row"><div class="set-num">${i+1}</div><div class="set-info">${s.reps} reps</div><div class="set-value">${s.weight || 0} kg</div></div>`
     ).join('');
     list.appendChild(el('div', { class: 'card' }, [
@@ -1457,6 +1727,7 @@ async function showCompletedReport(completed) {
         el('div', { style: 'font-weight:600', text: ex.name }),
         el('span', { class: 'badge', text: diffLabel[ex.difficulty] || ex.difficulty || '—' })
       ]),
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem;margin:6px 0', text: `${ex.sets} séries · ${ex.tonnage} kg·rep` }),
       el('div', { html: setsHtml })
     ]));
   });
