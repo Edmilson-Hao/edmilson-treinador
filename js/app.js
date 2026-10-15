@@ -7,6 +7,14 @@ import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEm
 import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, createExercise, updateExercise, getRoutinesOfStudent, createRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, createPlan, getPlansOfStudent, markPlanPaid } from './shared/db.js';
 import { $, $$, el, toast, formatDate, formatDateTime, initials, driveToEmbed, confirmDialog, generateInviteCode } from './shared/utils.js';
 
+// Captura erros de rate-limit e mostra toast amigável
+window.addEventListener('unhandledrejection', (e) => {
+  if (e.reason?.message?.includes('Muitas requisições')) {
+    toast(e.reason.message, 'error');
+    e.preventDefault();
+  }
+});
+
 // Estado global
 const state = {
   user: null,
@@ -152,16 +160,24 @@ function showOnboarding() {
   `;
 
   $('#btn-sou-personal').onclick = async () => {
-    const code = generateInviteCode();
-    await updateUser(state.user.uid, {
-      role: 'personal',
-      inviteCode: code,
-      personalId: null
-    });
-    state.profile.role = 'personal';
-    state.profile.inviteCode = code;
-    toast('Conta de Personal criada!', 'success');
-    showPersonalHome();
+    try {
+      const code = generateInviteCode();
+      const data = {
+        role: 'personal',
+        inviteCode: code,
+        personalId: null,
+        name: state.user.displayName || state.profile?.name || 'Personal',
+        email: state.user.email || state.profile?.email || null,
+        photoURL: state.user.photoURL || state.profile?.photoURL || null
+      };
+      await updateUser(state.user.uid, data);
+      state.profile = { ...(state.profile || {}), ...data };
+      toast('Conta de Personal criada!', 'success');
+      showPersonalHome();
+    } catch (e) {
+      console.error(e);
+      toast(e.message || 'Erro ao criar conta de Personal', 'error');
+    }
   };
 
   $('#btn-sou-aluno').onclick = () => {
@@ -188,19 +204,27 @@ function showJoinWithCode() {
 
   $('#btn-back').onclick = showOnboarding;
   $('#btn-join').onclick = async () => {
-    const code = $('#invite-code').value.trim().toUpperCase();
-    if (!code) return toast('Digite o código', 'error');
-    const personal = await findPersonalByInviteCode(code);
-    if (!personal) return toast('Código inválido', 'error');
-    await updateUser(state.user.uid, {
-      role: 'aluno',
-      personalId: personal.id,
-      inviteCode: null
-    });
-    state.profile.role = 'aluno';
-    state.profile.personalId = personal.id;
-    toast(`Vinculado a ${personal.name}!`, 'success');
-    showStudentHome();
+    try {
+      const code = $('#invite-code').value.trim().toUpperCase();
+      if (!code) return toast('Digite o código', 'error');
+      const personal = await findPersonalByInviteCode(code);
+      if (!personal) return toast('Código inválido', 'error');
+      const data = {
+        role: 'aluno',
+        personalId: personal.id,
+        inviteCode: null,
+        name: state.user.displayName || state.profile?.name || 'Aluno',
+        email: state.user.email || state.profile?.email || null,
+        photoURL: state.user.photoURL || state.profile?.photoURL || null
+      };
+      await updateUser(state.user.uid, data);
+      state.profile = { ...(state.profile || {}), ...data };
+      toast(`Vinculado a ${personal.name}!`, 'success');
+      showStudentHome();
+    } catch (e) {
+      console.error(e);
+      toast(e.message || 'Erro ao vincular', 'error');
+    }
   };
 }
 
