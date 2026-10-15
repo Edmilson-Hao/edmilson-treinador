@@ -509,6 +509,14 @@ body {
   pointer-events: none;
 }
 
+.splash-logo-img {
+  width: 160px;
+  height: 160px;
+  object-fit: contain;
+  border-radius: 28px;
+  margin-bottom: 8px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
 .splash-logo {
   width: 72px;
   height: 72px;
@@ -747,6 +755,13 @@ body {
   border-top: 1px solid var(--border);
   display: flex;
   z-index: 100;
+  overflow: hidden;
+  box-shadow: 0 -4px 20px rgba(0,0,0,0.25);
+}
+.bottom-nav::after,
+.bottom-nav::before {
+  display: none !important;
+  content: none !important;
 }
 
 .nav-item {
@@ -840,3 +855,51 @@ body {
   flex-wrap: wrap;
 }
 .diff-row .btn { flex: 1; min-width: 80px; }
+
+
+.alert-danger {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1.5px solid var(--danger);
+  color: #fecaca;
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.4;
+  margin-bottom: 12px;
+}
+.btn-danger-block {
+  background: var(--danger);
+  color: #fff;
+  width: 100%;
+}
+.btn-danger-block:active { opacity: 0.9; }
+.profile-photo {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--accent);
+  background: var(--elevated);
+}
+.profile-photo-lg {
+  width: 96px;
+  height: 96px;
+}
+.profile-photo-edit {
+  position: relative;
+  display: inline-block;
+  cursor: pointer;
+}
+.profile-photo-edit input { display: none; }
+.profile-photo-edit .edit-badge {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  background: var(--accent);
+  color: #0f172a;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+}

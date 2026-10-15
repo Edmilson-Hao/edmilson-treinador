@@ -11,12 +11,12 @@
   <link rel="manifest" href="manifest.json">
   <link rel="stylesheet" href="css/styles.css">
   <link rel="icon" href="assets/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="assets/icons/icon-192.png">
 </head>
 <body>
   <!-- Splash -->
   <div id="splash">
-    <div class="splash-logo">ET</div>
-    <div class="splash-title">Edmilson Treinador</div>
+    <img class="splash-logo-img" src="assets/logo.png" alt="Edmilson Treinador" width="160" height="160">
     <div class="spinner"></div>
   </div>
 
@@ -26,12 +26,11 @@
   <!-- App root -->
   <div id="app"></div>
 
-  <!-- Firebase SDK (compat para vanilla simples) -->
+  <!-- Firebase SDK -->
   <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-firestore-compat.js"></script>
 
-  <!-- App -->
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

@@ -179,3 +179,56 @@ export function confirmDialog(message) {
     document.body.appendChild(overlay);
   });
 }
+
+
+/**
+ * Redimensiona e comprime imagem para base64 (perfil).
+ * maxSize: lado máximo em px (default 256)
+ * maxBytes: tamanho aproximado alvo em bytes (default 120KB)
+ */
+export function compressImageToBase64(file, maxSize = 256, quality = 0.72) {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type.startsWith('image/')) {
+      reject(new Error('Selecione uma imagem'));
+      return;
+    }
+    // limite bruto 5MB antes de processar
+    if (file.size > 5 * 1024 * 1024) {
+      reject(new Error('Imagem muito grande (máx. 5 MB)'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Falha ao ler arquivo'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Imagem inválida'));
+      img.onload = () => {
+        let { width, height } = img;
+        const scale = Math.min(1, maxSize / Math.max(width, height));
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        let q = quality;
+        let dataUrl = canvas.toDataURL('image/jpeg', q);
+        // se ainda grande, reduz qualidade
+        while (dataUrl.length > 160000 && q > 0.4) {
+          q -= 0.1;
+          dataUrl = canvas.toDataURL('image/jpeg', q);
+        }
+        if (dataUrl.length > 200000) {
+          reject(new Error('Não foi possível comprimir o suficiente. Tente outra foto.'));
+          return;
+        }
+        resolve(dataUrl);
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}

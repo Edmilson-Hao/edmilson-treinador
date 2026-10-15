@@ -5,7 +5,7 @@
 import { firebaseConfig } from './firebase-config.js';
 import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEmail, logout, createStudentAccount } from './shared/auth.js';
 import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan } from './shared/db.js';
-import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, confirmDialog, generateInviteCode } from './shared/utils.js';
+import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, confirmDialog, generateInviteCode, compressImageToBase64 } from './shared/utils.js';
 
 // Captura erros de rate-limit e mostra toast amigável
 window.addEventListener('unhandledrejection', (e) => {
@@ -98,6 +98,28 @@ async function routeByRole() {
 }
 
 /** Enter no input aciona o botão associado */
+async function saveProfilePhoto(file) {
+  try {
+    toast('Processando foto...', 'success');
+    const dataUrl = await compressImageToBase64(file, 256, 0.72);
+    await updateUser(state.user.uid, { photoURL: dataUrl });
+    state.profile.photoURL = dataUrl;
+    toast('Foto atualizada!', 'success');
+    return dataUrl;
+  } catch (e) {
+    console.error(e);
+    toast(e.message || 'Erro ao salvar foto', 'error');
+    return null;
+  }
+}
+
+function photoEl(url, name, sizeClass = '') {
+  if (url) {
+    return `<img class="profile-photo ${sizeClass}" src="${url}" alt="${name || ''}">`;
+  }
+  return `<div class="profile-photo ${sizeClass}" style="display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--accent)">${initials(name || '?')}</div>`;
+}
+
 function bindEnter(inputSel, btnSelOrFn) {
   const inp = typeof inputSel === 'string' ? $(inputSel) : inputSel;
   if (!inp) return;
@@ -115,7 +137,7 @@ function showAuth() {
   app.innerHTML = `
     <div class="auth-screen">
       <div class="auth-logo">
-        <div class="logo-circle">ET</div>
+        <img src="assets/logo.png" alt="Edmilson Treinador" style="width:120px;height:120px;object-fit:contain;border-radius:24px;margin-bottom:12px">
         <h1>Edmilson Treinador</h1>
         <p>Seus treinos, sua evolução</p>
       </div>
@@ -326,6 +348,17 @@ async function renderPersonalTab(tab, students, stats) {
         </div>
       </div>
 
+      <div class="card" style="display:flex;align-items:center;gap:16px">
+        <label class="profile-photo-edit" title="Trocar foto">
+          ${photoEl(state.profile.photoURL, state.profile.name, 'profile-photo-lg')}
+          <span class="edit-badge">Foto</span>
+          <input type="file" id="photo-input" accept="image/*">
+        </label>
+        <div style="flex:1">
+          <div style="font-weight:700">${state.profile.name || 'Personal'}</div>
+          <div class="text-muted" style="font-size:0.85rem">${state.profile.email || ''}</div>
+        </div>
+      </div>
       <div class="card">
         <div class="card-title">Seu código de convite</div>
         <div style="display:flex;align-items:center;gap:12px">
@@ -367,6 +400,12 @@ async function renderPersonalTab(tab, students, stats) {
       navigator.clipboard.writeText(state.profile.inviteCode || '');
       toast('Código copiado!', 'success');
     });
+    $('#photo-input')?.addEventListener('change', async (e) => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      const url = await saveProfilePhoto(f);
+      if (url) showPersonalHome();
+    });
     const goTab = (name) => {
       $$('.tab').forEach(t => {
         t.classList.toggle('active', t.dataset.tab === name);
@@ -399,7 +438,7 @@ async function renderPersonalTab(tab, students, stats) {
     const list = $('#students-list');
     students.forEach(s => {
       const card = el('div', { class: 'student-card', onClick: () => showStudentDetail(s) }, [
-        el('div', { class: 'avatar', text: initials(s.name) }),
+        s.photoURL ? el('img', { class: 'avatar', src: s.photoURL, style: 'object-fit:cover' }) : el('div', { class: 'avatar', text: initials(s.name) }),
         el('div', { class: 'student-info' }, [
           el('div', { class: 'student-name', text: s.name }),
           el('div', { class: 'student-meta', text: s.email || '' })
@@ -1115,7 +1154,7 @@ async function showStudentHome() {
       <button class="nav-item" data-nav="treinos">
         <span>🏋️</span><span>Treinos</span>
       </button>
-      <button class="nav-item" data-nav="financeiro">
+      <button class="nav-item" data-nav="financeiro" id="nav-fin">
         <span>💰</span><span>Financeiro</span>
       </button>
       <button class="nav-item" data-nav="historico">
@@ -1126,14 +1165,31 @@ async function showStudentHome() {
 
   $('#btn-logout').onclick = () => logout();
 
+  const openFin = plans.filter(p => ['pendente','ativo','recusado'].includes(p.status || 'pendente')).length;
+  if (openFin > 0) {
+    const nf = $('#nav-fin');
+    if (nf) {
+      nf.style.color = 'var(--danger)';
+      nf.innerHTML = `<span>💰</span><span style="color:var(--danger)">Financeiro · ${openFin}</span>`;
+    }
+  }
+
   const renderNav = (nav) => {
     $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.nav === nav));
     const main = $('#student-main');
     if (nav === 'inicio') {
       const openPlans = plans.filter(p => ['pendente','ativo','aguardando'].includes(p.status || 'pendente'));
       main.innerHTML = `
-        <div class="card note note-accent">
-          Olá, <strong>${state.profile.name}</strong>! 💪
+        <div class="card" style="display:flex;align-items:center;gap:14px">
+          <label class="profile-photo-edit" title="Trocar foto">
+            ${photoEl(state.profile.photoURL, state.profile.name)}
+            <span class="edit-badge">Foto</span>
+            <input type="file" id="student-photo" accept="image/*">
+          </label>
+          <div>
+            <div style="font-weight:700">Olá, ${state.profile.name || 'aluno'}! 💪</div>
+            <div class="text-muted" style="font-size:0.8rem">Toque na foto para alterar</div>
+          </div>
         </div>
         ${dueSoon.length ? `<div class="card note" style="border-color:#f59e0b;margin-bottom:12px">
           ⚠️ ${dueSoon.length} fatura(s) vencendo em até 5 dias — veja em Financeiro.
@@ -1155,6 +1211,12 @@ async function showStudentHome() {
       $('#go-treinos').onclick = () => renderNav('treinos');
       $('#go-fin').onclick = () => renderNav('financeiro');
       $('#go-hist').onclick = () => renderNav('historico');
+      $('#student-photo')?.addEventListener('change', async (e) => {
+        const f = e.target.files?.[0];
+        if (!f) return;
+        const url = await saveProfilePhoto(f);
+        if (url) showStudentHome();
+      });
       const hr = $('#home-recent');
       if (!completed.length) hr.innerHTML = `<p class="text-muted" style="font-size:0.85rem">Nenhum treino ainda</p>`;
       else completed.slice(0,3).forEach(c => {
@@ -1212,8 +1274,12 @@ async function fillStudentRoutines(routines) {
 
 function renderStudentFinance(main, plans) {
   const pix = state.profile.personalPixKey || '';
+  const hasOpen = plans.some(p => ['pendente','ativo','aguardando','recusado'].includes(p.status || 'pendente'));
   main.innerHTML = `
     <div class="page-title">Financeiro</div>
+    ${hasOpen ? `<div class="alert-danger">
+      ⚠️ Atenção!!! Antes de qualquer pagamento verifique o nome e instituição bancária, nunca realize pagamentos para nome de terceiros.
+    </div>` : ''}
     ${pix ? `<div class="card"><div class="card-title">Chave PIX do personal</div>
       <div style="word-break:break-all;font-weight:600;color:var(--accent)">${pix}</div>
       <button class="btn btn-sm btn-outline" id="btn-copy-pix" style="margin-top:8px">Copiar chave PIX</button>
@@ -1241,14 +1307,29 @@ function renderStudentFinance(main, plans) {
     const due = pl.dueDate ? formatDate(pl.dueDate) : '—';
     const st = pl.status || 'pendente';
     const pixKey = pl.pixKey || pix;
-    const card = el('div', { class: 'card' }, [
+    const isOpen = st === 'pendente' || st === 'ativo' || st === 'recusado';
+    const card = el('div', {
+      class: 'card',
+      style: isOpen ? 'border:1.5px solid var(--danger)' : ''
+    }, [
       el('div', { style: 'font-size:0.75rem;color:var(--muted);text-transform:uppercase', text: 'Fatura' }),
       el('div', { style: 'display:flex;justify-content:space-between;align-items:center' }, [
         el('div', { style: 'font-weight:700', text: pl.name }),
-        el('span', { class: `badge ${st==='pago'?'badge-success':''}`, text: statusLabel[st] || st })
+        el('span', {
+          class: 'badge',
+          style: isOpen ? 'background:var(--danger);color:#fff' : (st==='pago' ? '' : ''),
+          text: statusLabel[st] || st
+        })
       ]),
       el('div', { class: 'text-muted', style: 'font-size:0.9rem;margin-top:6px', text: `R$ ${Number(pl.value||0).toFixed(2)} · Vence: ${due}` })
     ]);
+    if (isOpen) {
+      card.appendChild(el('div', {
+        class: 'alert-danger',
+        style: 'margin-top:12px;margin-bottom:0;font-size:0.8rem',
+        html: '⚠️ Atenção!!! Antes de qualquer pagamento verifique o nome e instituição bancária, nunca realize pagamentos para nome de terceiros.'
+      }));
+    }
     if (pixKey) {
       card.appendChild(el('button', {
         class: 'btn btn-sm btn-outline',
@@ -1260,11 +1341,11 @@ function renderStudentFinance(main, plans) {
         }
       }));
     }
-    if (st === 'pendente' || st === 'ativo' || st === 'recusado') {
+    if (isOpen) {
       card.appendChild(el('button', {
-        class: 'btn btn-primary btn-block',
+        class: 'btn btn-block btn-danger-block',
         style: 'margin-top:12px',
-        text: 'Já paguei',
+        text: 'Já paguei — sinalizar',
         onClick: async () => {
           await studentClaimPaid(pl.id);
           toast('Sinalizado! Aguarde o personal confirmar.', 'success');

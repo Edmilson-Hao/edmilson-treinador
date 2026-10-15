@@ -2,7 +2,7 @@
   "name": "Edmilson Treinador",
   "short_name": "Edmilson",
   "description": "App de treinos personalizados - Edmilson Treinador",
-  "start_url": "/",
+  "start_url": "./",
   "display": "standalone",
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
