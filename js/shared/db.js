@@ -90,13 +90,41 @@ export async function getStudentsOfPersonal(personalId) {
 }
 
 // ---------- EXERCISES ----------
-export async function getExercises(personalId) {
+export async function getExercises(personalId, { includeGlobal = true } = {}) {
   guard('listExercises', 8, 12000);
+  // Lista personalizada do personal
   const snap = await col('exercises')
     .where('personalId', '==', personalId)
     .limit(LIMITS.exercises)
     .get();
-  return sortBy(snap.docs.map(d => ({ id: d.id, ...d.data() })), 'name');
+  let list = snap.docs.map(d => ({ id: d.id, ...d.data(), listType: 'personalizada' }));
+
+  // Lista padrão (global) — personalId especial "__global__"
+  if (includeGlobal) {
+    try {
+      const gSnap = await col('exercises')
+        .where('personalId', '==', '__global__')
+        .limit(LIMITS.exercises)
+        .get();
+      const globals = gSnap.docs.map(d => ({ id: d.id, ...d.data(), listType: 'padrao' }));
+      list = [...globals, ...list];
+    } catch (e) {
+      console.warn('global exercises', e);
+    }
+  }
+  // dedupe by id
+  const seen = new Set();
+  list = list.filter(x => (seen.has(x.id) ? false : (seen.add(x.id), true)));
+  return sortBy(list, 'name');
+}
+
+export async function getGlobalExercises() {
+  guard('listGlobalEx', 6, 15000);
+  const snap = await col('exercises')
+    .where('personalId', '==', '__global__')
+    .limit(LIMITS.exercises)
+    .get();
+  return sortBy(snap.docs.map(d => ({ id: d.id, ...d.data(), listType: 'padrao' })), 'name');
 }
 
 export async function createExercise(data) {

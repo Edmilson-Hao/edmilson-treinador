@@ -4,7 +4,7 @@
 
 import { firebaseConfig } from './firebase-config.js';
 import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEmail, logout, createStudentAccount } from './shared/auth.js';
-import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan } from './shared/db.js';
+import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, getGlobalExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan } from './shared/db.js';
 import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, confirmDialog, generateInviteCode, compressImageToBase64 } from './shared/utils.js';
 
 // Captura erros de rate-limit e mostra toast amigável
@@ -143,6 +143,12 @@ function photoEl(url, name, sizeClass = '') {
     return `<img class="profile-photo ${sizeClass}" src="${url}" alt="${name || ''}">`;
   }
   return `<div class="profile-photo ${sizeClass}" style="display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--accent)">${initials(name || '?')}</div>`;
+}
+
+/** Dono do app — único que edita a lista padrão */
+function isAppAdmin() {
+  const email = (state.profile?.email || state.user?.email || '').toLowerCase();
+  return state.profile?.isAdmin === true || email === 'edmilsonwp@gmail.com';
 }
 
 function bindEnter(inputSel, btnSelOrFn) {
@@ -550,27 +556,50 @@ function showAddStudentModal() {
 
 // ---------- EXERCÍCIOS ----------
 async function renderExercisesTab(content) {
-  const exercises = await getExercises(state.user.uid);
+  let listType = content.dataset.exList || 'personalizada';
+  const personal = await getExercises(state.user.uid, { includeGlobal: false });
+  let global = [];
+  try { global = await getGlobalExercises(); } catch (e) { console.warn(e); }
+
+  const admin = isAppAdmin();
+  const show = listType === 'padrao' ? global : personal;
+
   content.innerHTML = `
-    <button class="btn btn-primary btn-block" id="btn-new-ex" style="margin-bottom:16px">+ Criar exercício</button>
+    <div class="tabs" id="ex-list-tabs" style="margin-bottom:12px">
+      <button class="tab ${listType==='padrao'?'active':''}" data-l="padrao">Lista padrão (${global.length})</button>
+      <button class="tab ${listType==='personalizada'?'active':''}" data-l="personalizada">Personalizada (${personal.length})</button>
+    </div>
+    ${listType === 'padrao' && !admin ? `<div class="card note" style="font-size:0.85rem;margin-bottom:12px">Lista padrão compartilhada. Apenas o administrador pode editar.</div>` : ''}
+    ${(listType === 'personalizada' || admin) ? `<button class="btn btn-primary btn-block" id="btn-new-ex" style="margin-bottom:16px">+ Criar exercício ${listType==='padrao'?'(padrão)':'(meu)'}</button>` : ''}
     <div id="ex-list"></div>
   `;
-  $('#btn-new-ex').onclick = () => showExerciseForm();
+  content.dataset.exList = listType;
+
+  $$('#ex-list-tabs .tab').forEach(t => {
+    t.onclick = () => {
+      content.dataset.exList = t.dataset.l;
+      renderExercisesTab(content);
+    };
+  });
+
+  $('#btn-new-ex')?.addEventListener('click', () => showExerciseForm(null, listType));
 
   const list = $('#ex-list');
-  if (exercises.length === 0) {
-    list.innerHTML = `<div class="empty"><p>Nenhum exercício cadastrado</p></div>`;
+  if (show.length === 0) {
+    list.innerHTML = `<div class="empty"><p>Nenhum exercício nesta lista</p></div>`;
     return;
   }
-  exercises.forEach(ex => {
+  show.forEach(ex => {
+    const canEdit = listType === 'personalizada' || admin;
     const card = el('div', { class: 'card' }, [
       el('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:8px' }, [
         el('div', { style: 'flex:1' }, [
           el('div', { style: 'font-weight:600', text: ex.name }),
-          el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: ex.muscleGroup || '' })
+          el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: ex.muscleGroup || '' }),
+          el('div', { style: 'font-size:0.7rem;color:var(--muted);margin-top:2px', text: listType === 'padrao' ? 'Lista padrão' : 'Personalizada' })
         ]),
-        el('div', { style: 'display:flex;gap:6px;flex-shrink:0' }, [
-          el('button', { class: 'btn btn-sm btn-outline', text: 'Editar', onClick: () => showExerciseForm(ex) }),
+        canEdit ? el('div', { style: 'display:flex;gap:6px;flex-shrink:0' }, [
+          el('button', { class: 'btn btn-sm btn-outline', text: 'Editar', onClick: () => showExerciseForm(ex, listType) }),
           el('button', {
             class: 'btn btn-sm btn-outline',
             text: 'Excluir',
@@ -586,15 +615,17 @@ async function renderExercisesTab(content) {
               }
             }
           })
-        ])
+        ]) : null
       ])
     ]);
     list.appendChild(card);
   });
 }
 
-function showExerciseForm(ex = null) {
+function showExerciseForm(ex = null, listType = 'personalizada') {
   const isEdit = !!ex;
+  const isGlobal = (ex?.personalId === '__global__') || listType === 'padrao';
+  if (isGlobal && !isAppAdmin()) return toast('Sem permissão para lista padrão', 'error');
   const html = `
     <div class="form-group">
       <label class="form-label">Nome do exercício</label>
@@ -625,12 +656,12 @@ function showExerciseForm(ex = null) {
 
   $('#btn-save-ex').onclick = async () => {
     const data = {
-      personalId: state.user.uid,
+      personalId: isGlobal ? '__global__' : state.user.uid,
       name: $('#ex-name').value.trim(),
       muscleGroup: $('#ex-group').value,
       videoUrl: $('#ex-video').value.trim(),
       notes: $('#ex-notes').value.trim(),
-      isCustom: true
+      isCustom: !isGlobal
     };
     if (!data.name) return toast('Nome obrigatório', 'error');
     try {
@@ -1103,6 +1134,7 @@ function showPickExercise(allExercises, workout, routine, student) {
       workout.exercises.push({
         exerciseId: ex.id,
         name: ex.name,
+        muscleGroup: ex.muscleGroup || '',
         videoUrl: ex.videoUrl || '',
         notes: ex.notes || '',
         sets: [{ reps: '10', weight: '0', rest: '60', done: false }]
@@ -1361,6 +1393,9 @@ async function showStudentHome() {
       <button class="nav-item" data-nav="historico">
         <span>📊</span><span>Histórico</span>
       </button>
+      <button class="nav-item" data-nav="perfil">
+        <span>👤</span><span>Perfil</span>
+      </button>
     </nav>
   `;
 
@@ -1441,6 +1476,8 @@ async function showStudentHome() {
       renderStudentFinance(main, plans);
     } else if (nav === 'historico') {
       renderStudentHistory(main, completed);
+    } else if (nav === 'perfil') {
+      showUserProfile();
     }
   };
 
@@ -1669,10 +1706,24 @@ function renderStudentHistory(main, completed, onOpen) {
   // completed: newest first
   let period = main.dataset.period || 'mes';
 
+  let workoutFilter = main.dataset.workoutFilter || '';
+  let muscleFilter = main.dataset.muscleFilter || '';
+
+  const workoutNames = [...new Set(completed.map(c => c.workoutName).filter(Boolean))].sort();
+  const muscles = [...new Set(completed.flatMap(c =>
+    (c.exercisesPerformed || []).map(e => e.muscleGroup).filter(Boolean)
+  ))].sort();
+
   const apply = () => {
-    const filtered = filterByPeriod(completed, period);
+    let filtered = filterByPeriod(completed, period);
+    if (workoutFilter) filtered = filtered.filter(c => c.workoutName === workoutFilter);
+    if (muscleFilter) {
+      filtered = filtered.filter(c =>
+        (c.exercisesPerformed || []).some(e => e.muscleGroup === muscleFilter)
+      );
+    }
     const metricsList = filtered.map(c => ({ c, m: calcWorkoutMetrics(c) }));
-    const chrono = [...metricsList].reverse(); // oldest first for chart
+    const chrono = [...metricsList].reverse();
 
     main.innerHTML = `
       <div class="page-title">Histórico</div>
@@ -1681,15 +1732,35 @@ function renderStudentHistory(main, completed, onOpen) {
           `<button class="tab ${period===p?'active':''}" data-p="${p}">${p[0].toUpperCase()+p.slice(1)}</button>`
         ).join('')}
       </div>
+      <div class="card" style="margin-bottom:12px">
+        <div class="form-group" style="margin-bottom:10px">
+          <label class="form-label">Filtrar por treino</label>
+          <select class="form-select" id="filter-workout">
+            <option value="">Todos os treinos</option>
+            ${workoutNames.map(n => `<option value="${n}" ${workoutFilter===n?'selected':''}>${n}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">Filtrar por músculo</label>
+          <select class="form-select" id="filter-muscle">
+            <option value="">Todos os músculos</option>
+            ${muscles.map(n => `<option value="${n}" ${muscleFilter===n?'selected':''}>${n}</option>`).join('')}
+          </select>
+        </div>
+      </div>
       <div class="card" id="chart-box"></div>
       <div class="page-title" style="margin-top:16px">Treinos</div>
       <div id="student-history"></div>
     `;
     main.dataset.period = period;
+    main.dataset.workoutFilter = workoutFilter;
+    main.dataset.muscleFilter = muscleFilter;
 
     $$('#period-tabs .tab').forEach(t => {
       t.onclick = () => { period = t.dataset.p; main.dataset.period = period; apply(); };
     });
+    $('#filter-workout').onchange = () => { workoutFilter = $('#filter-workout').value; apply(); };
+    $('#filter-muscle').onchange = () => { muscleFilter = $('#filter-muscle').value; apply(); };
 
     renderTonnageChart($('#chart-box'), chrono.map(x => x.c));
 
@@ -1795,6 +1866,7 @@ async function showStudentWorkout(workout, routine) {
   const buildPerformed = () => exercises.map(ex => ({
     name: ex.name,
     exerciseId: ex.exerciseId || null,
+    muscleGroup: ex.muscleGroup || '',
     videoUrl: ex.videoUrl || '',
     difficulty: 'moderado',
     sets: (ex.sets || []).map(s => ({

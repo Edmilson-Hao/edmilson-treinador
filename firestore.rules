@@ -60,17 +60,25 @@ service cloud.firestore {
     // EXERCISES
     // =====================================================
     match /exercises/{exId} {
+      // Lista padrão (__global__) legível por todos autenticados
       allow get, list: if isSignedIn() && (
         resource.data.personalId == request.auth.uid
+        || resource.data.personalId == '__global__'
         || isMyPersonal(resource.data.personalId)
       );
 
+      // Personal cria na lista própria; admin pode criar em __global__
       allow create: if isPersonal()
-                    && request.resource.data.personalId == request.auth.uid
-                    && request.resource.data.keys().hasAll(['name', 'personalId']);
+                    && request.resource.data.keys().hasAll(['name', 'personalId'])
+                    && (
+                      request.resource.data.personalId == request.auth.uid
+                      || request.resource.data.personalId == '__global__'
+                    );
 
-      allow update, delete: if isPersonal()
-                            && resource.data.personalId == request.auth.uid;
+      allow update, delete: if isPersonal() && (
+        resource.data.personalId == request.auth.uid
+        || resource.data.personalId == '__global__'
+      );
     }
 
     // =====================================================
