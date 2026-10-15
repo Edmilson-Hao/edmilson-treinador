@@ -674,19 +674,9 @@ function renderStudentTab(tab, student, routines, plans, completed) {
       return;
     }
     content.innerHTML = '';
-    completed.forEach(c => {
-      const m = calcWorkoutMetrics(c);
-      content.appendChild(el('div', { class: 'card', style: 'cursor:pointer', onClick: () => showCompletedReport(c) }, [
-        el('div', { style: 'font-weight:600', text: c.workoutName || 'Treino' }),
-        el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) }),
-        el('div', { style: 'display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;font-size:0.85rem' }, [
-          el('span', { class: 'badge badge-muted', text: `${m.totalSets} séries` }),
-          el('span', { class: 'badge badge-muted', text: `${m.tonnage} kg·rep` }),
-          el('span', { class: 'badge badge-muted', text: c.intensity || '—' })
-        ]),
-        el('div', { style: 'font-size:0.8rem;color:var(--accent);margin-top:6px', text: 'Ver relatório completo ›' })
-      ]));
-    });
+    const wrap = el('div', {});
+    content.appendChild(wrap);
+    renderStudentHistory(wrap, completed, (c, prev) => showCompletedReport(c, prev));
   }
 
   if (tab === 'plano') {
@@ -1318,51 +1308,135 @@ function movingAverage(values, window = 3) {
   return out;
 }
 
-function renderStudentHistory(main, completed) {
-  // completed is newest first
-  const metricsList = completed.map(c => ({ c, m: calcWorkoutMetrics(c) }));
-  // chronological for MA (oldest first)
-  const chrono = [...metricsList].reverse();
-  const tons = chrono.map(x => x.m.tonnage);
-  const ma = movingAverage(tons, 3);
-  const maById = {};
-  chrono.forEach((x, i) => { maById[x.c.id] = ma[i]; });
 
-  main.innerHTML = `
-    <div class="page-title">Histórico completo</div>
-    ${completed.length >= 2 ? `<div class="card note" style="font-size:0.85rem">
-      Média móvel de tonelagem (últimos 3 treinos) ajuda a ver progressão de carga × reps.
-    </div>` : ''}
-    <div id="student-history"></div>
-  `;
-  const hList = $('#student-history');
-  if (!completed.length) {
-    hList.innerHTML = `<p class="text-muted">Nenhum treino concluído ainda</p>`;
-    return;
-  }
-  const diffLabel = { facil: 'Fácil', moderado: 'Moderado', intenso: 'Intenso', leve: 'Leve', moderada: 'Moderada', intensa: 'Intensa' };
-  metricsList.forEach(({ c, m }) => {
-    hList.appendChild(el('div', {
-      class: 'card',
-      style: 'cursor:pointer',
-      onClick: () => showStudentCompletedDetail(c, maById[c.id])
-    }, [
-      el('div', { style: 'font-weight:600', text: c.workoutName || 'Treino' }),
-      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) }),
-      el('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:0.85rem' }, [
-        el('span', { class: 'badge badge-muted', text: `${m.totalSets} séries` }),
-        el('span', { class: 'badge badge-muted', text: `${m.tonnage} kg·rep` }),
-        maById[c.id] != null ? el('span', { class: 'badge', style: 'background:var(--accent);color:#000', text: `MM3: ${maById[c.id]}` }) : null,
-        c.intensity ? el('span', { class: 'badge badge-muted', text: diffLabel[c.intensity] || c.intensity }) : null
-      ]),
-      el('div', { style: 'font-size:0.8rem;color:var(--accent);margin-top:6px', text: 'Ver detalhe completo ›' })
-    ]));
+/** Filtra treinos por período */
+function filterByPeriod(completed, period) {
+  const now = Date.now();
+  const ms = {
+    semana: 7 * 86400000,
+    mes: 30 * 86400000,
+    semestre: 182 * 86400000,
+    ano: 365 * 86400000
+  }[period] || 30 * 86400000;
+  return completed.filter(c => {
+    const t = c.finishedAt?.toMillis?.() || new Date(c.finishedAt).getTime() || 0;
+    return now - t <= ms;
   });
 }
 
-function showStudentCompletedDetail(completed, maValue) {
+/** SVG simples de linha (tonelagem ao longo do tempo) */
+function renderTonnageChart(container, completedAsc) {
+  const vals = completedAsc.map(c => calcWorkoutMetrics(c).tonnage);
+  if (vals.length < 1) {
+    container.innerHTML = `<p class="text-muted" style="font-size:0.85rem;text-align:center">Sem dados no período</p>`;
+    return;
+  }
+  const w = 320, h = 120, pad = 24;
+  const maxV = Math.max(...vals, 1);
+  const minV = Math.min(...vals, 0);
+  const range = Math.max(maxV - minV, 1);
+  const pts = vals.map((v, i) => {
+    const x = pad + (i / Math.max(vals.length - 1, 1)) * (w - pad * 2);
+    const y = h - pad - ((v - minV) / range) * (h - pad * 2);
+    return [x, y, v];
+  });
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+  const dots = pts.map(p => `<circle cx="${p[0]}" cy="${p[1]}" r="3.5" fill="var(--accent)"/>`).join('');
+  const last = vals[vals.length - 1];
+  const prev = vals.length > 1 ? vals[vals.length - 2] : last;
+  const trend = last > prev ? '↑' : last < prev ? '↓' : '→';
+  const trendColor = last > prev ? 'var(--success)' : last < prev ? 'var(--danger)' : 'var(--muted)';
+  container.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+      <div style="font-size:0.8rem;color:var(--muted)">Tonelagem (kg·rep)</div>
+      <div style="font-weight:700;color:${trendColor}">${last} ${trend}</div>
+    </div>
+    <svg viewBox="0 0 ${w} ${h}" width="100%" height="120" style="display:block">
+      <line x1="${pad}" y1="${h-pad}" x2="${w-pad}" y2="${h-pad}" stroke="var(--border)" stroke-width="1"/>
+      <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      ${dots}
+    </svg>
+  `;
+}
+
+function tonnageColor(current, previous) {
+  if (previous == null) return 'var(--text)';
+  if (current > previous) return 'var(--success)';
+  return 'var(--text)';
+}
+
+function renderStudentHistory(main, completed, onOpen) {
+  // completed: newest first
+  let period = main.dataset.period || 'mes';
+
+  const apply = () => {
+    const filtered = filterByPeriod(completed, period);
+    const metricsList = filtered.map(c => ({ c, m: calcWorkoutMetrics(c) }));
+    const chrono = [...metricsList].reverse(); // oldest first for chart
+
+    main.innerHTML = `
+      <div class="page-title">Histórico</div>
+      <div class="tabs" id="period-tabs" style="margin-bottom:12px">
+        ${['semana','mes','semestre','ano'].map(p =>
+          `<button class="tab ${period===p?'active':''}" data-p="${p}">${p[0].toUpperCase()+p.slice(1)}</button>`
+        ).join('')}
+      </div>
+      <div class="card" id="chart-box"></div>
+      <div class="page-title" style="margin-top:16px">Treinos</div>
+      <div id="student-history"></div>
+    `;
+    main.dataset.period = period;
+
+    $$('#period-tabs .tab').forEach(t => {
+      t.onclick = () => { period = t.dataset.p; main.dataset.period = period; apply(); };
+    });
+
+    renderTonnageChart($('#chart-box'), chrono.map(x => x.c));
+
+    const hList = $('#student-history');
+    if (!metricsList.length) {
+      hList.innerHTML = `<p class="text-muted">Nenhum treino neste período</p>`;
+      return;
+    }
+
+    // previous tonnage in chronological order for color
+    const tonById = {};
+    chrono.forEach((x, i) => {
+      const prev = i > 0 ? chrono[i - 1].m.tonnage : null;
+      tonById[x.c.id] = { ton: x.m.tonnage, prev };
+    });
+
+    metricsList.forEach(({ c, m }) => {
+      const { ton, prev } = tonById[c.id] || { ton: m.tonnage, prev: null };
+      const color = tonnageColor(ton, prev);
+      hList.appendChild(el('div', {
+        class: 'card',
+        style: 'cursor:pointer',
+        onClick: () => (onOpen ? onOpen(c, prev) : showStudentCompletedDetail(c, null, prev))
+      }, [
+        el('div', { style: 'font-weight:600', text: c.workoutName || 'Treino' }),
+        el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) }),
+        el('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:0.85rem' }, [
+          el('span', { class: 'badge badge-muted', text: `${m.totalSets} séries` }),
+          el('span', {
+            class: 'badge',
+            style: `background:${color === 'var(--success)' ? 'var(--success)' : 'var(--elevated)'};color:${color === 'var(--success)' ? '#fff' : 'var(--text)'}`,
+            text: `${m.tonnage} kg·rep`
+          }),
+          c.intensity ? el('span', { class: 'badge badge-muted', text: c.intensity }) : null
+        ]),
+        el('div', { style: 'font-size:0.8rem;color:var(--accent);margin-top:6px', text: 'Ver detalhe ›' })
+      ]));
+    });
+  };
+
+  apply();
+}
+
+function showStudentCompletedDetail(completed, _ma, prevTonnage) {
   const m = calcWorkoutMetrics(completed);
   const diffLabel = { facil: 'Fácil', moderado: 'Moderado', intenso: 'Intenso', leve: 'Leve', moderada: 'Moderada', intensa: 'Intensa' };
+  const color = tonnageColor(m.tonnage, prevTonnage);
   const app = $('#app');
   app.innerHTML = `
     <header class="app-header">
@@ -1377,9 +1451,9 @@ function showStudentCompletedDetail(completed, maValue) {
         <div class="stat-row" style="margin-top:12px">
           <div class="stat-card"><div class="stat-value">${m.totalSets}</div><div class="stat-label">Séries</div></div>
           <div class="stat-card"><div class="stat-value">${m.exerciseCount}</div><div class="stat-label">Exercícios</div></div>
-          <div class="stat-card"><div class="stat-value">${m.tonnage}</div><div class="stat-label">Tonelagem</div></div>
+          <div class="stat-card"><div class="stat-value" style="color:${color}">${m.tonnage}</div><div class="stat-label">Tonelagem</div></div>
         </div>
-        ${maValue != null ? `<div style="margin-top:8px;font-size:0.9rem">Média móvel (3 treinos): <strong>${maValue}</strong> kg·rep</div>` : ''}
+        ${prevTonnage != null ? `<div style="margin-top:8px;font-size:0.85rem;color:var(--muted)">Treino anterior: ${prevTonnage} kg·rep ${m.tonnage > prevTonnage ? '<span style="color:var(--success)">↑ aumento</span>' : m.tonnage < prevTonnage ? '<span style="color:var(--danger)">↓ redução</span>' : '→ igual'}</div>` : ''}
         <div style="margin-top:8px">Intensidade: <strong>${diffLabel[completed.intensity] || completed.intensity || '—'}</strong></div>
         ${completed.feedback ? `<div style="margin-top:8px">${completed.feedback}</div>` : ''}
       </div>
@@ -1403,7 +1477,7 @@ function showStudentCompletedDetail(completed, maValue) {
         el('div', { style: 'font-weight:600', text: ex.name }),
         el('span', { class: 'badge', text: diffLabel[ex.difficulty] || ex.difficulty || '—' })
       ]),
-      el('div', { class: 'text-muted', style: 'font-size:0.8rem;margin:6px 0', text: `${ex.sets} séries · tonelagem ${ex.tonnage} kg·rep` }),
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem;margin:6px 0', text: `${ex.sets} séries · ${ex.tonnage} kg·rep` }),
       el('div', { html: setsHtml })
     ]));
   });
@@ -1412,199 +1486,211 @@ function showStudentCompletedDetail(completed, maValue) {
 async function showStudentWorkout(workout, routine) {
   const app = $('#app');
   const exercises = workout.exercises || [];
-  const storageKey = `workout_done_${state.user.uid}_${workout.id}`;
+  const storageKey = `workout_draft_${state.user.uid}_${workout.id}`;
 
-  // estado de concluído por exercício (localStorage — zera ao finalizar treino)
-  let doneMap = {};
-  try { doneMap = JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch { doneMap = {}; }
+  // Carrega rascunho (séries editadas + concluídos) do localStorage
+  let draft = { done: {}, performed: null };
+  try { draft = { done: {}, performed: null, ...JSON.parse(localStorage.getItem(storageKey) || '{}') }; } catch {}
 
-  const performed = exercises.map(ex => ({
+  const buildPerformed = () => exercises.map(ex => ({
     name: ex.name,
     exerciseId: ex.exerciseId || null,
     videoUrl: ex.videoUrl || '',
     difficulty: 'moderado',
     sets: (ex.sets || []).map(s => ({
-      reps: s.reps || 0,
-      weight: s.weight || 0,
-      rest: s.rest || 60
+      reps: Number(s.reps) || 0,
+      weight: Number(s.weight) || 0,
+      rest: Number(s.rest) || 60
     }))
   }));
 
-  const saveDoneMap = () => localStorage.setItem(storageKey, JSON.stringify(doneMap));
-  const clearDoneMap = () => localStorage.removeItem(storageKey);
+  // Se já existe rascunho com mesmo nº de exercícios, reutiliza (preserva kg/reps)
+  let performed = buildPerformed();
+  if (draft.performed && draft.performed.length === performed.length) {
+    performed = draft.performed.map((p, i) => ({
+      ...performed[i],
+      ...p,
+      sets: (p.sets && p.sets.length) ? p.sets : performed[i].sets,
+      difficulty: p.difficulty || 'moderado'
+    }));
+  }
+  const doneMap = draft.done || {};
 
-  app.innerHTML = `
-    <header class="app-header">
-      <button class="icon-btn" id="btn-home" title="Início">🏠</button>
-      <div class="title" style="flex:1;text-align:center">${workout.name}</div>
-      <button class="icon-btn" id="btn-back">←</button>
-    </header>
-    <div class="page" style="padding-bottom:100px">
-      <div class="card note" style="font-size:0.85rem">
-        Toque no exercício para expandir séries. Marque <strong>Concluir</strong> ao terminar cada um.
-      </div>
-      <div id="workout-progress" style="font-size:0.85rem;color:var(--muted);margin-bottom:12px"></div>
-      <div id="workout-exs"></div>
-      <div class="card" style="margin-top:20px">
-        <div class="form-group">
-          <label class="form-label">Como foi o treino no geral?</label>
-          <select class="form-select" id="intensity">
-            <option value="leve">Leve</option>
-            <option value="moderada" selected>Moderada</option>
-            <option value="intensa">Intensa</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Feedback geral (opcional)</label>
-          <textarea class="form-textarea" id="feedback" placeholder="Como se sentiu, dores, dúvidas..."></textarea>
-        </div>
-        <button class="btn btn-success btn-block" id="btn-finish">Finalizar treino</button>
-      </div>
-    </div>
-  `;
-
-  $('#btn-home').onclick = () => showStudentHome();
-  $('#btn-back').onclick = () => showStudentHome();
-
-  const updateProgress = () => {
-    const done = Object.values(doneMap).filter(Boolean).length;
-    const elp = $('#workout-progress');
-    if (elp) elp.textContent = `${done} de ${performed.length} exercícios concluídos`;
+  const persist = () => {
+    localStorage.setItem(storageKey, JSON.stringify({ done: doneMap, performed }));
   };
+  const clearDraft = () => localStorage.removeItem(storageKey);
 
-  const list = $('#workout-exs');
-
-  performed.forEach((ex, idx) => {
-    const isDone = !!doneMap[idx];
-    const card = el('div', {
-      class: 'card',
-      id: `ex-card-${idx}`,
-      style: isDone ? 'opacity:0.75;border-color:var(--success)' : ''
-    });
-
-    const summarySets = (ex.sets || []).map(s => `${s.reps}×${s.weight || 0}kg`).join(' · ');
-
-    card.innerHTML = `
-      <div class="ex-header" data-idx="${idx}" style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none">
-        <span class="ex-chevron" style="color:var(--accent);font-size:0.9rem;transition:transform .15s">▶</span>
-        <div style="flex:1">
-          <div style="font-weight:600;display:flex;align-items:center;gap:8px">
-            ${isDone ? '<span style="color:var(--success)">✓</span>' : ''}
-            <span>${ex.name}</span>
+  const render = () => {
+    const doneCount = Object.values(doneMap).filter(Boolean).length;
+    app.innerHTML = `
+      <header class="app-header">
+        <button class="icon-btn" id="btn-home" title="Início">🏠</button>
+        <div class="title" style="flex:1;text-align:center">${workout.name}</div>
+        <button class="icon-btn" id="btn-back">←</button>
+      </header>
+      <div class="page" style="padding-bottom:100px">
+        <div class="card note" style="font-size:0.85rem">
+          Toque no exercício para expandir. Edite <strong>Reps</strong> e <strong>Kg</strong>. Marque ao concluir.
+        </div>
+        <div id="workout-progress" style="font-size:0.85rem;color:var(--muted);margin-bottom:12px">
+          ${doneCount} de ${performed.length} exercícios concluídos
+        </div>
+        <div id="workout-exs"></div>
+        <div class="card" style="margin-top:20px">
+          <div class="form-group">
+            <label class="form-label">Como foi o treino no geral?</label>
+            <select class="form-select" id="intensity">
+              <option value="leve">Leve</option>
+              <option value="moderada" selected>Moderada</option>
+              <option value="intensa">Intensa</option>
+            </select>
           </div>
-          <div class="text-muted" style="font-size:0.8rem;margin-top:2px">${ex.sets.length} séries · ${summarySets || '—'}</div>
-        </div>
-      </div>
-      <div class="ex-body" data-idx="${idx}" style="display:none;margin-top:12px">
-        ${ex.videoUrl ? `<div class="video-wrap"><iframe src="${videoToEmbed(ex.videoUrl)}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen frameborder="0"></iframe></div>` : ''}
-        <div class="form-group" style="margin-top:12px">
-          <label class="form-label">Dificuldade deste exercício</label>
-          <div class="diff-row" data-ex="${idx}">
-            <button type="button" class="btn btn-sm btn-outline diff-btn" data-d="facil">Fácil</button>
-            <button type="button" class="btn btn-sm btn-primary diff-btn" data-d="moderado">Moderado</button>
-            <button type="button" class="btn btn-sm btn-outline diff-btn" data-d="intenso">Intenso</button>
+          <div class="form-group">
+            <label class="form-label">Feedback geral (opcional)</label>
+            <textarea class="form-textarea" id="feedback" placeholder="Como se sentiu, dores, dúvidas..."></textarea>
           </div>
+          <button class="btn btn-success btn-block" id="btn-finish">Finalizar treino</button>
         </div>
-        <div style="display:flex;gap:8px;margin-bottom:6px;padding:0 0 0 36px;font-size:0.75rem;color:var(--muted);font-weight:600">
-          <div style="width:28px"></div>
-          <div style="flex:1">Reps</div>
-          <div style="flex:1">Kg</div>
-        </div>
-        <div class="sets-edit" data-ex="${idx}"></div>
-        <button type="button" class="btn btn-block btn-toggle-done" data-idx="${idx}" style="margin-top:12px">
-          ${isDone ? '↩ Refazer exercício' : '✓ Concluir exercício'}
-        </button>
       </div>
     `;
-    list.appendChild(card);
 
-    // sets inputs
-    const setsEl = card.querySelector('.sets-edit');
-    ex.sets.forEach((s, si) => {
-      const row = document.createElement('div');
-      row.className = 'set-row';
-      row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px';
-      row.innerHTML = `
-        <div class="set-num">${si + 1}</div>
-        <div style="flex:1">
-          <input type="number" class="form-input" data-field="reps" data-ex="${idx}" data-set="${si}" value="${s.reps}" placeholder="Reps" min="0" inputmode="numeric">
+    $('#btn-home').onclick = () => showStudentHome();
+    $('#btn-back').onclick = () => showStudentHome();
+
+    const list = $('#workout-exs');
+    performed.forEach((ex, idx) => {
+      const isDone = !!doneMap[idx];
+      const summarySets = (ex.sets || []).map(s => `${s.reps}×${s.weight || 0}kg`).join(' · ');
+      const card = el('div', {
+        class: 'card',
+        id: `ex-card-${idx}`,
+        style: isDone ? 'border-color:var(--success)' : ''
+      });
+      card.innerHTML = `
+        <div class="ex-header" style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none">
+          <span class="ex-chevron" style="color:var(--accent);transition:transform .15s">▶</span>
+          <div style="flex:1">
+            <div style="font-weight:600;display:flex;align-items:center;gap:8px">
+              ${isDone ? '<span style="color:var(--success)">✓</span>' : ''}
+              <span>${ex.name}</span>
+            </div>
+            <div class="text-muted" style="font-size:0.8rem;margin-top:2px">${ex.sets.length} séries · ${summarySets || '—'}</div>
+          </div>
         </div>
-        <div style="flex:1">
-          <input type="number" class="form-input" data-field="weight" data-ex="${idx}" data-set="${si}" value="${s.weight}" placeholder="Kg" min="0" step="0.5" inputmode="decimal">
+        <div class="ex-body" style="display:none;margin-top:12px">
+          ${ex.videoUrl ? `<div class="video-wrap"><iframe src="${videoToEmbed(ex.videoUrl)}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen frameborder="0"></iframe></div>` : ''}
+          <div class="form-group" style="margin-top:12px">
+            <label class="form-label">Dificuldade deste exercício</label>
+            <div class="diff-row">
+              <button type="button" class="btn btn-sm ${ex.difficulty==='facil'?'btn-primary':'btn-outline'} diff-btn" data-d="facil">Fácil</button>
+              <button type="button" class="btn btn-sm ${ex.difficulty==='moderado'?'btn-primary':'btn-outline'} diff-btn" data-d="moderado">Moderado</button>
+              <button type="button" class="btn btn-sm ${ex.difficulty==='intenso'?'btn-primary':'btn-outline'} diff-btn" data-d="intenso">Intenso</button>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;margin-bottom:6px;padding-left:36px;font-size:0.75rem;color:var(--muted);font-weight:600">
+            <div style="width:28px"></div>
+            <div style="flex:1">Reps</div>
+            <div style="flex:1">Kg</div>
+          </div>
+          <div class="sets-edit"></div>
+          <button type="button" class="btn btn-block ${isDone ? 'btn-outline' : 'btn-success'} btn-toggle-done" style="margin-top:12px">
+            ${isDone ? '↩ Refazer exercício' : '✓ Concluir exercício'}
+          </button>
         </div>
       `;
-      setsEl.appendChild(row);
-    });
+      list.appendChild(card);
 
-    // toggle expand
-    const header = card.querySelector('.ex-header');
-    const body = card.querySelector('.ex-body');
-    const chevron = card.querySelector('.ex-chevron');
-    header.onclick = () => {
-      const open = body.style.display !== 'none';
-      body.style.display = open ? 'none' : 'block';
-      chevron.style.transform = open ? '' : 'rotate(90deg)';
-    };
-
-    // difficulty
-    card.querySelectorAll('.diff-btn').forEach(btn => {
-      btn.onclick = (e) => {
-        e.stopPropagation();
-        performed[idx].difficulty = btn.dataset.d;
-        card.querySelectorAll('.diff-btn').forEach(b => {
-          b.classList.toggle('btn-primary', b.dataset.d === btn.dataset.d);
-          b.classList.toggle('btn-outline', b.dataset.d !== btn.dataset.d);
-        });
-      };
-    });
-
-    // inputs
-    card.querySelectorAll('input[data-field]').forEach(inp => {
-      inp.onchange = inp.oninput = () => {
-        const ei = +inp.dataset.ex;
-        const si = +inp.dataset.set;
-        performed[ei].sets[si][inp.dataset.field] = parseFloat(inp.value) || 0;
-      };
-    });
-
-    // concluir / refazer
-    card.querySelector('.btn-toggle-done').onclick = (e) => {
-      e.stopPropagation();
-      doneMap[idx] = !doneMap[idx];
-      saveDoneMap();
-      // re-render this card state quickly
-      showStudentWorkout(workout, routine);
-    };
-  });
-
-  updateProgress();
-
-  $('#btn-finish').onclick = async () => {
-    try {
-      const intensity = $('#intensity').value;
-      const feedback = $('#feedback').value.trim();
-      await saveCompletedWorkout({
-        workoutId: workout.id,
-        workoutName: workout.name,
-        routineId: routine?.id || null,
-        studentId: state.user.uid,
-        studentName: state.profile.name,
-        personalId: state.profile.personalId,
-        intensity,
-        feedback,
-        exercisesPerformed: performed,
-        startedAt: firebase.firestore.Timestamp.now(),
-        durationSeconds: 0,
-        resolved: false
+      const setsEl = card.querySelector('.sets-edit');
+      ex.sets.forEach((s, si) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px';
+        row.innerHTML = `
+          <div class="set-num">${si + 1}</div>
+          <div style="flex:1">
+            <input type="number" class="form-input" data-field="reps" data-set="${si}" value="${s.reps}" placeholder="Reps" min="0" inputmode="numeric">
+          </div>
+          <div style="flex:1">
+            <input type="number" class="form-input" data-field="weight" data-set="${si}" value="${s.weight}" placeholder="Kg" min="0" step="0.5" inputmode="decimal">
+          </div>
+        `;
+        setsEl.appendChild(row);
       });
-      clearDoneMap();
-      toast('Treino concluído! Bom trabalho 💪', 'success');
-      showStudentHome();
-    } catch (e) {
-      console.error(e);
-      toast(e.message || 'Erro ao salvar treino', 'error');
-    }
+
+      const body = card.querySelector('.ex-body');
+      const chevron = card.querySelector('.ex-chevron');
+      card.querySelector('.ex-header').onclick = () => {
+        const open = body.style.display !== 'none';
+        body.style.display = open ? 'none' : 'block';
+        chevron.style.transform = open ? '' : 'rotate(90deg)';
+      };
+
+      card.querySelectorAll('.diff-btn').forEach(btn => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          performed[idx].difficulty = btn.dataset.d;
+          persist();
+          card.querySelectorAll('.diff-btn').forEach(b => {
+            b.className = `btn btn-sm ${b.dataset.d === btn.dataset.d ? 'btn-primary' : 'btn-outline'} diff-btn`;
+            b.dataset.d = b.dataset.d;
+          });
+        };
+      });
+
+      card.querySelectorAll('input[data-field]').forEach(inp => {
+        const apply = () => {
+          const si = +inp.dataset.set;
+          const field = inp.dataset.field;
+          performed[idx].sets[si][field] = parseFloat(inp.value) || 0;
+          persist();
+          // atualiza resumo no header
+          const sum = performed[idx].sets.map(s => `${s.reps}×${s.weight || 0}kg`).join(' · ');
+          const meta = card.querySelector('.text-muted');
+          if (meta) meta.textContent = `${performed[idx].sets.length} séries · ${sum}`;
+        };
+        inp.addEventListener('input', apply);
+        inp.addEventListener('change', apply);
+      });
+
+      card.querySelector('.btn-toggle-done').onclick = (e) => {
+        e.stopPropagation();
+        doneMap[idx] = !doneMap[idx];
+        persist();
+        render(); // re-render seguro pois performed já está no draft
+      };
+    });
+
+    $('#btn-finish').onclick = async () => {
+      try {
+        // garante valores atuais dos inputs
+        persist();
+        const intensity = $('#intensity').value;
+        const feedback = $('#feedback').value.trim();
+        await saveCompletedWorkout({
+          workoutId: workout.id,
+          workoutName: workout.name,
+          routineId: routine?.id || null,
+          studentId: state.user.uid,
+          studentName: state.profile.name,
+          personalId: state.profile.personalId,
+          intensity,
+          feedback,
+          exercisesPerformed: performed,
+          startedAt: firebase.firestore.Timestamp.now(),
+          durationSeconds: 0,
+          resolved: false
+        });
+        clearDraft();
+        toast('Treino concluído! Bom trabalho 💪', 'success');
+        showStudentHome();
+      } catch (e) {
+        console.error(e);
+        toast(e.message || 'Erro ao salvar treino', 'error');
+      }
+    };
   };
+
+  render();
 }
 
 
@@ -1759,9 +1845,10 @@ function showPixKeyModal() {
 }
 
 // Relatório de treino do aluno (personal)
-async function showCompletedReport(completed) {
+async function showCompletedReport(completed, prevTonnage) {
   const m = calcWorkoutMetrics(completed);
   const diffLabel = { facil: 'Fácil', moderado: 'Moderado', intenso: 'Intenso', leve: 'Leve', moderada: 'Moderada', intensa: 'Intensa' };
+  const color = tonnageColor(m.tonnage, prevTonnage);
   const app = $('#app');
   app.innerHTML = `
     <header class="app-header">
@@ -1776,8 +1863,9 @@ async function showCompletedReport(completed) {
         <div class="stat-row" style="margin-top:12px">
           <div class="stat-card"><div class="stat-value">${m.totalSets}</div><div class="stat-label">Séries</div></div>
           <div class="stat-card"><div class="stat-value">${m.exerciseCount}</div><div class="stat-label">Exercícios</div></div>
-          <div class="stat-card"><div class="stat-value">${m.tonnage}</div><div class="stat-label">Tonelagem</div></div>
+          <div class="stat-card"><div class="stat-value" style="color:${color}">${m.tonnage}</div><div class="stat-label">Tonelagem</div></div>
         </div>
+        ${prevTonnage != null ? `<div style="margin-top:8px;font-size:0.85rem;color:var(--muted)">Anterior: ${prevTonnage} kg·rep ${m.tonnage > prevTonnage ? '<span style="color:var(--success)">↑</span>' : m.tonnage < prevTonnage ? '<span style="color:var(--danger)">↓</span>' : '→'}</div>` : ''}
         <div style="margin-top:8px">Intensidade geral: <strong>${diffLabel[completed.intensity] || completed.intensity || '—'}</strong></div>
         ${completed.feedback ? `<div style="margin-top:8px">${completed.feedback}</div>` : ''}
       </div>
