@@ -3,7 +3,7 @@
 // =====================================================
 
 import { firebaseConfig, initAppCheckIfConfigured } from './firebase-config.js';
-import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEmail, logout, createStudentAccount } from './shared/auth.js';
+import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEmail, logout, createStudentAccount, completeGoogleRedirectIfAny } from './shared/auth.js';
 import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, getGlobalExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, updateRoutine, archiveRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, deleteWorkout, cloneRoutine, cleanupExpiredCoachReplies, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, markCoachReplyRead, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan, sendChatMessage, getChatMessages, upsertReminder, getRemindersForStudent, getRemindersForPersonal } from './shared/db.js';
 import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, mediaHtml, isGifUrl, confirmDialog, generateInviteCode, compressImageToBase64 } from './shared/utils.js';
 

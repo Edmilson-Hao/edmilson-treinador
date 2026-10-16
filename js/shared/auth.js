@@ -19,42 +19,74 @@ export function onAuthChange(callback) {
   return auth.onAuthStateChanged(callback);
 }
 
+/** Garante doc users após login Google (popup ou redirect) */
+async function ensureGoogleProfile(user) {
+  let profile = await getUser(user.uid);
+  if (!profile) {
+    profile = {
+      role: 'pending',
+      name: user.displayName || 'Usuário',
+      email: user.email,
+      photoURL: user.photoURL || null,
+      personalId: null,
+      inviteCode: null
+    };
+    await createUser(user.uid, profile);
+  } else {
+    try {
+      await updateUser(user.uid, { lastLogin: firebase.firestore.FieldValue.serverTimestamp() });
+    } catch (e) {
+      console.warn('lastLogin', e);
+    }
+  }
+  return profile;
+}
+
 export async function loginWithGoogle() {
   guard('authGoogle', 8, 60000, true);
   try {
     const result = await auth.signInWithPopup(googleProvider);
-    const user = result.user;
-    let profile = await getUser(user.uid);
-
-    if (!profile) {
-      // Primeiro login → pergunta se é Personal ou Aluno
-      // Por padrão, se for o primeiro usuário do projeto, vira Personal
-      // Depois o Personal cria alunos ou gera código
-      profile = {
-        role: 'pending', // será definido no onboarding
-        name: user.displayName || 'Usuário',
-        email: user.email,
-        photoURL: user.photoURL || null,
-        personalId: null,
-        inviteCode: null
-      };
-      await createUser(user.uid, profile);
-    } else {
-      await updateUser(user.uid, { lastLogin: firebase.firestore.FieldValue.serverTimestamp() });
-    }
-    return { user, profile };
+    const profile = await ensureGoogleProfile(result.user);
+    return { user: result.user, profile };
   } catch (err) {
     console.error(err);
     const code = err.code || '';
-    if (code === 'auth/popup-blocked' || code === 'auth/popup-closed-by-user') {
-      toast('Popup do Google bloqueado ou fechado. Permita popups neste site.', 'error');
-    } else if (err.code === 'rate-limit' || (err.message || '').includes('Muitas requisições')) {
+    // Popup inválido / bloqueado → tenta redirect (mais compatível com GitHub Pages)
+    if (
+      code === 'auth/popup-blocked' ||
+      code === 'auth/popup-closed-by-user' ||
+      code === 'auth/cancelled-popup-request' ||
+      code === 'auth/unauthorized-domain' ||
+      (err.message || '').toLowerCase().includes('invalid')
+    ) {
+      toast('Redirecionando para o Google...', 'success');
+      await auth.signInWithRedirect(googleProvider);
+      return null;
+    }
+    if (err.code === 'rate-limit' || (err.message || '').includes('Muitas requisições')) {
       toast(err.message, 'error');
     } else {
-      toast(err.message || 'Erro ao entrar com Google', 'error');
+      toast(err.message || 'Erro ao entrar com Google. Verifique domínios autorizados no Firebase.', 'error');
     }
     throw err;
   }
+}
+
+/** Chamar no boot para completar login via redirect */
+export async function completeGoogleRedirectIfAny() {
+  try {
+    const result = await auth.getRedirectResult();
+    if (result && result.user) {
+      await ensureGoogleProfile(result.user);
+      return result.user;
+    }
+  } catch (err) {
+    console.error('redirect result', err);
+    if (err.code && err.code !== 'auth/null-user') {
+      toast(err.message || 'Erro no retorno do Google', 'error');
+    }
+  }
+  return null;
 }
 
 export async function loginWithEmail(email, password) {
