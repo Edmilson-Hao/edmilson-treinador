@@ -1,30 +1,30 @@
-/* =====================================================
-   SERVICE WORKER - Edmilson Treinador
-   Cache de assets + dados de treino para offline
-   ===================================================== */
+/* Service Worker - Edmilson Treinador v2 */
+const CACHE_NAME = 'edmilson-v2';
+const BASE = self.registration.scope; // funciona em subpath GitHub Pages
 
-const CACHE_NAME = 'edmilson-v1';
 const ASSETS = [
-  '/',
-  '/index.html',
-  '/css/styles.css',
-  '/js/app.js',
-  '/js/firebase-config.js',
-  '/js/shared/utils.js',
-  '/js/shared/db.js',
-  '/js/shared/auth.js',
-  '/manifest.json'
-];
+  'index.html',
+  'css/styles.css',
+  'js/app.js',
+  'js/firebase-config.js',
+  'js/shared/utils.js',
+  'js/shared/db.js',
+  'js/shared/auth.js',
+  'js/shared/rateLimit.js',
+  'manifest.json',
+  'assets/logo.png',
+  'assets/icons/icon-192.png'
+].map(p => new URL(p, BASE).href);
 
-// Install
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS))
+    caches.open(CACHE_NAME).then((cache) =>
+      Promise.allSettled(ASSETS.map(u => cache.add(u).catch(() => null)))
+    )
   );
   self.skipWaiting();
 });
 
-// Activate - limpa caches antigos
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
@@ -34,53 +34,42 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Fetch - network first para Firebase, cache first para assets
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Não cacheia chamadas do Firebase / Google
+  // Nunca cacheia Firebase, analytics, nem mídia pesada (gif/vídeo)
   if (
     url.hostname.includes('googleapis.com') ||
-    url.hostname.includes('firebaseio.com') ||
-    url.hostname.includes('firestore.googleapis.com') ||
-    url.hostname.includes('google.com')
+    url.hostname.includes('firebase') ||
+    url.hostname.includes('gstatic.com') ||
+    url.hostname.includes('youtube.com') ||
+    url.hostname.includes('ytimg.com') ||
+    url.hostname.includes('giphy.com') ||
+    url.hostname.includes('tenor.com') ||
+    url.hostname.includes('googleusercontent.com') ||
+    url.pathname.match(/\.(gif|mp4|webm|mov)(\?|$)/i)
   ) {
-    return; // deixa o browser lidar
+    return;
   }
 
-  // Assets estáticos → cache first
-  if (event.request.method === 'GET') {
-    event.respondWith(
-      caches.match(event.request).then((cached) => {
-        const fetched = fetch(event.request)
-          .then((response) => {
-            if (response && response.status === 200) {
-              const clone = response.clone();
-              caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-            }
-            return response;
-          })
-          .catch(() => cached);
-        return cached || fetched;
-      })
-    );
-  }
-});
+  if (event.request.method !== 'GET') return;
 
-// Push notifications (básico)
-self.addEventListener('push', (event) => {
-  const data = event.data ? event.data.json() : { title: 'Edmilson Treinador', body: 'Nova notificação' };
-  event.waitUntil(
-    self.registration.showNotification(data.title || 'Edmilson Treinador', {
-      body: data.body || '',
-      icon: '/assets/icons/icon-192.png',
-      badge: '/assets/icons/icon-192.png',
-      vibrate: [100, 50, 100]
+  event.respondWith(
+    caches.match(event.request).then((cached) => {
+      const fetched = fetch(event.request)
+        .then((response) => {
+          if (response && response.status === 200 && response.type === 'basic') {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return response;
+        })
+        .catch(() => cached);
+      // network first para HTML/JS (atualizações), cache fallback offline
+      if (url.pathname.endsWith('.js') || url.pathname.endsWith('.html') || url.pathname.endsWith('/')) {
+        return fetched.then(r => r || cached);
+      }
+      return cached || fetched;
     })
   );
-});
-
-self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
-  event.waitUntil(clients.openWindow('/'));
 });

@@ -128,12 +128,20 @@ service cloud.firestore {
                     && request.resource.data.studentId == request.auth.uid
                     && request.resource.data.personalId == userDoc().data.personalId;
 
-      // Só o personal pode marcar como resolvido
-      allow update: if isPersonal()
-                    && resource.data.personalId == request.auth.uid
-                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['resolved']);
+      // Personal resolve feedback + aluno marca mensagem como lida
+      allow update: if isSignedIn() && (
+        (isPersonal()
+          && resource.data.personalId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['resolved', 'resolvedAt', 'coachReply', 'coachReplyAt', 'coachReplyRead']))
+        ||
+        (isAluno()
+          && resource.data.studentId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['coachReplyRead', 'coachReplyReadAt']))
+      );
 
-      allow delete: if false;
+      allow delete: if isPersonal() && resource.data.personalId == request.auth.uid;
     }
 
     // =====================================================
@@ -176,6 +184,27 @@ service cloud.firestore {
     // =====================================================
     // REMINDERS
     // =====================================================
+    match /chatMessages/{id} {
+      allow read: if isSignedIn() && (
+        resource.data.personalId == request.auth.uid
+        || resource.data.studentId == request.auth.uid
+      );
+      allow create: if isSignedIn()
+        && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.text is string
+        && request.resource.data.text.size() <= 500
+        && (
+          (isPersonal() && request.resource.data.personalId == request.auth.uid)
+          || (isAluno() && request.resource.data.studentId == request.auth.uid
+              && request.resource.data.personalId == userDoc().data.personalId)
+        );
+      allow update: if false;
+      allow delete: if isSignedIn() && (
+        resource.data.personalId == request.auth.uid
+        || resource.data.studentId == request.auth.uid
+      );
+    }
+
     match /reminders/{id} {
       allow get, list: if isPersonal()
                        && resource.data.personalId == request.auth.uid;

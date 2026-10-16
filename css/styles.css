@@ -909,3 +909,19 @@ body {
   padding: 2px 6px;
   border-radius: 999px;
 }
+
+
+/* ---------- Tema claro ---------- */
+[data-theme="light"] {
+  --bg: #f1f5f9;
+  --card: #ffffff;
+  --elevated: #e2e8f0;
+  --text: #0f172a;
+  --muted: #64748b;
+  --border: #cbd5e1;
+  --header-bg: #ffffff;
+}
+[data-theme="light"] body { background: var(--bg); color: var(--text); }
+[data-theme="light"] .app-header { background: #fff; border-bottom-color: var(--border); }
+[data-theme="light"] .bottom-nav { background: #fff; }
+[data-theme="light"] .toast { background: #fff; color: #0f172a; }

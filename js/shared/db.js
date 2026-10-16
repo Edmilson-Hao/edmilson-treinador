@@ -209,6 +209,130 @@ export async function deleteWorkout(id) {
   await col('workouts').doc(id).delete();
 }
 
+/** Clona rotina + treinos para o mesmo aluno ou outro */
+export async function cloneRoutine(routineId, targetStudentId, personalId) {
+  guard('cloneRoutine', 3, 60000);
+  const rDoc = await col('routines').doc(routineId).get();
+  if (!rDoc.exists) throw new Error('Rotina não encontrada');
+  const r = rDoc.data();
+  const newId = await createRoutine({
+    name: (r.name || 'Rotina') + ' (cópia)',
+    personalId,
+    studentId: targetStudentId,
+    order: r.order || 0,
+    notes: r.notes || null
+  });
+  const workouts = await getWorkoutsOfRoutine(routineId);
+  for (const w of workouts) {
+    await createWorkout({
+      routineId: newId,
+      personalId,
+      studentId: targetStudentId,
+      name: w.name,
+      order: w.order || 0,
+      exercises: w.exercises || [],
+      startDate: w.startDate || null,
+      endDate: w.endDate || null
+    });
+  }
+  return newId;
+}
+
+/** Remove coachReply de treinos com endDate passado (limpeza) */
+export async function cleanupExpiredCoachReplies(personalId) {
+  guard('cleanupReplies', 2, 60000);
+  const snap = await col('workouts')
+    .where('personalId', '==', personalId)
+    .limit(100)
+    .get();
+  const now = Date.now();
+  let cleaned = 0;
+  for (const d of snap.docs) {
+    const w = d.data();
+    const end = w.endDate?.toMillis?.();
+    if (!end || end > now) continue;
+    // limpa replies ligadas a este workoutId
+    const cs = await col('completedWorkouts')
+      .where('workoutId', '==', d.id)
+      .limit(30)
+      .get();
+    for (const c of cs.docs) {
+      if (c.data().coachReply) {
+        await c.ref.update({
+          coachReply: firebase.firestore.FieldValue.delete(),
+          coachReplyAt: firebase.firestore.FieldValue.delete(),
+          coachReplyRead: firebase.firestore.FieldValue.delete()
+        });
+        cleaned++;
+      }
+    }
+  }
+  return cleaned;
+}
+
+// ---------- CHAT (TTL 2 dias no cliente) ----------
+export async function sendChatMessage({ personalId, studentId, fromUid, text }) {
+  guard('chatSend', 20, 15000);
+  const ref = await col('chatMessages').add({
+    personalId,
+    studentId,
+    fromUid,
+    text: String(text).slice(0, 500),
+    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+  return ref.id;
+}
+
+export async function getChatMessages(personalId, studentId, limit = 50) {
+  guard('chatList', 10, 12000);
+  const snap = await col('chatMessages')
+    .where('personalId', '==', personalId)
+    .where('studentId', '==', studentId)
+    .limit(limit)
+    .get();
+  const twoDays = Date.now() - 2 * 86400000;
+  const list = [];
+  for (const d of snap.docs) {
+    const data = d.data();
+    const t = data.createdAt?.toMillis?.() || 0;
+    if (t && t < twoDays) {
+      // apaga mensagens velhas
+      d.ref.delete().catch(() => {});
+      continue;
+    }
+    list.push({ id: d.id, ...data });
+  }
+  return list.sort((a, b) => (a.createdAt?.toMillis?.()||0) - (b.createdAt?.toMillis?.()||0));
+}
+
+// ---------- REMINDERS ----------
+export async function upsertReminder(data) {
+  guard('reminder', 10, 15000);
+  if (data.id) {
+    const { id, ...rest } = data;
+    await col('reminders').doc(id).update(rest);
+    return id;
+  }
+  const ref = await col('reminders').add({
+    ...data,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+  return ref.id;
+}
+
+export async function getRemindersForStudent(studentId) {
+  guard('listReminders', 8, 12000);
+  const snap = await col('reminders').where('studentId', '==', studentId).limit(20).get();
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+export async function getRemindersForPersonal(personalId) {
+  guard('listRemindersP', 8, 12000);
+  const snap = await col('reminders').where('personalId', '==', personalId).limit(50).get();
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+
 // ---------- COMPLETED WORKOUTS ----------
 export async function saveCompletedWorkout(data) {
   guard('saveCompleted', 5, 30000);
