@@ -249,9 +249,17 @@ export async function getFeedbacksForPersonal(personalId, onlyUnresolved = true)
   });
 }
 
-export async function resolveFeedback(id) {
+export async function resolveFeedback(id, coachReply = '') {
   guard('resolveFeedback', 15, 15000);
-  await col('completedWorkouts').doc(id).update({ resolved: true });
+  const data = {
+    resolved: true,
+    resolvedAt: firebase.firestore.FieldValue.serverTimestamp()
+  };
+  if (coachReply) {
+    data.coachReply = coachReply;
+    data.coachReplyAt = firebase.firestore.FieldValue.serverTimestamp();
+  }
+  await col('completedWorkouts').doc(id).update(data);
 }
 
 // ---------- PLANS ----------
