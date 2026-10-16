@@ -5,7 +5,7 @@
 import { firebaseConfig } from './firebase-config.js';
 import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEmail, logout, createStudentAccount } from './shared/auth.js';
 import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, getGlobalExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan } from './shared/db.js';
-import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, confirmDialog, generateInviteCode, compressImageToBase64 } from './shared/utils.js';
+import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, mediaHtml, isGifUrl, confirmDialog, generateInviteCode, compressImageToBase64 } from './shared/utils.js';
 
 // Captura erros de rate-limit e mostra toast amigável
 window.addEventListener('unhandledrejection', (e) => {
@@ -342,7 +342,7 @@ async function showPersonalHome() {
       <button class="tab" data-tab="alunos">Alunos</button>
       <button class="tab" data-tab="exercicios">Exercícios</button>
       <button class="tab" data-tab="financeiro" id="tab-financeiro">Financeiro</button>
-      <button class="tab" data-tab="feedbacks">Feedbacks</button>
+      <button class="tab" data-tab="feedbacks" id="tab-feedbacks">Feedbacks</button>
     </div>
 
     <div class="page" id="main-content"></div>
@@ -365,6 +365,17 @@ async function showPersonalHome() {
     const tab = $('#tab-financeiro');
     if (tab && n > 0) {
       tab.innerHTML = `Financeiro <span class="badge" style="background:var(--accent);color:#000;margin-left:4px">${n}</span>`;
+    }
+  }).catch(() => {});
+  getFeedbacksForPersonal(state.user.uid, true).then(fbs => {
+    const tab = $('#tab-feedbacks');
+    if (tab && fbs.length > 0) {
+      tab.innerHTML = `Feedbacks <span class="badge" style="background:var(--danger);color:#fff;margin-left:4px">${fbs.length}</span>`;
+    }
+    const lab = $('#act-feedbacks-label');
+    if (lab && fbs.length > 0) {
+      lab.innerHTML = `Feedbacks (${fbs.length})`;
+      lab.style.color = 'var(--danger)';
     }
   }).catch(() => {});
 }
@@ -419,7 +430,7 @@ async function renderPersonalTab(tab, students, stats) {
         </div>
         <div class="action-item" id="act-feedbacks">
           <div class="icon">💬</div>
-          <div class="label">Feedbacks</div>
+          <div class="label" id="act-feedbacks-label">Feedbacks</div>
         </div>
         <div class="action-item" id="act-financeiro">
           <div class="icon">💰</div>
@@ -579,7 +590,10 @@ async function renderExercisesTab(content) {
       <button class="tab ${listType==='personalizada'?'active':''}" data-l="personalizada">Personalizada (${personal.length})</button>
     </div>
     ${listType === 'padrao' && !admin ? `<div class="card note" style="font-size:0.85rem;margin-bottom:12px">Lista padrão compartilhada. Apenas o administrador pode editar.</div>` : ''}
-    ${(listType === 'personalizada' || admin) ? `<button class="btn btn-primary btn-block" id="btn-new-ex" style="margin-bottom:16px">+ Criar exercício ${listType==='padrao'?'(padrão)':'(meu)'}</button>` : ''}
+    ${(listType === 'personalizada' || admin) ? `<button class="btn btn-primary btn-block" id="btn-new-ex" style="margin-bottom:12px">+ Criar exercício ${listType==='padrao'?'(padrão)':'(meu)'}</button>` : ''}
+    <div class="form-group" style="margin-bottom:12px">
+      <input type="search" class="form-input" id="ex-search" placeholder="🔍 Buscar exercício ou músculo..." autocomplete="off">
+    </div>
     <div id="ex-list"></div>
   `;
   content.dataset.exList = listType;
@@ -594,11 +608,13 @@ async function renderExercisesTab(content) {
   $('#btn-new-ex')?.addEventListener('click', () => showExerciseForm(null, listType));
 
   const list = $('#ex-list');
-  if (show.length === 0) {
-    list.innerHTML = `<div class="empty"><p>Nenhum exercício nesta lista</p></div>`;
-    return;
-  }
-  show.forEach(ex => {
+  const renderList = (items) => {
+    list.innerHTML = '';
+    if (!items.length) {
+      list.innerHTML = `<div class="empty"><p>Nenhum exercício encontrado</p></div>`;
+      return;
+    }
+    items.forEach(ex => {
     const canEdit = listType === 'personalizada' || admin;
     const card = el('div', { class: 'card' }, [
       el('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:8px' }, [
@@ -628,6 +644,17 @@ async function renderExercisesTab(content) {
       ])
     ]);
     list.appendChild(card);
+    });
+  };
+  renderList(show);
+
+  $('#ex-search')?.addEventListener('input', () => {
+    const q = ($('#ex-search').value || '').trim().toLowerCase();
+    if (!q) return renderList(show);
+    renderList(show.filter(ex =>
+      (ex.name || '').toLowerCase().includes(q) ||
+      (ex.muscleGroup || '').toLowerCase().includes(q)
+    ));
   });
 }
 
@@ -648,8 +675,13 @@ function showExerciseForm(ex = null, listType = 'personalizada') {
       </select>
     </div>
     <div class="form-group">
-      <label class="form-label">Link do vídeo (Google Drive)</label>
+      <label class="form-label">Link do vídeo</label>
       <input type="url" class="form-input" id="ex-video" value="${ex?.videoUrl || ''}" placeholder="YouTube, Shorts ou Google Drive">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Link de GIF (opcional)</label>
+      <input type="url" class="form-input" id="ex-gif" value="${ex?.gifUrl || ''}" placeholder="https://...arquivo.gif ou Giphy/Tenor">
+      <p class="text-muted" style="font-size:0.75rem;margin-top:4px">Se preencher o GIF, ele tem prioridade na visualização do aluno.</p>
     </div>
     <div class="form-group">
       <label class="form-label">Observações</label>
@@ -669,6 +701,7 @@ function showExerciseForm(ex = null, listType = 'personalizada') {
       name: $('#ex-name').value.trim(),
       muscleGroup: $('#ex-group').value,
       videoUrl: $('#ex-video').value.trim(),
+      gifUrl: $('#ex-gif').value.trim(),
       notes: $('#ex-notes').value.trim(),
       isCustom: !isGlobal
     };
@@ -1164,6 +1197,7 @@ function showPickExercise(allExercises, workout, routine, student) {
         name: ex.name,
         muscleGroup: ex.muscleGroup || '',
         videoUrl: ex.videoUrl || '',
+        gifUrl: ex.gifUrl || '',
         notes: ex.notes || '',
         sets: [{ reps: '10', weight: '0', rest: '60', done: false }]
       });
@@ -1379,7 +1413,7 @@ async function showStudentHome() {
   let plans = [];
   try {
     routines = await getRoutinesOfStudent(state.user.uid);
-    completed = await getCompletedByStudent(state.user.uid, 5);
+    completed = await getCompletedByStudent(state.user.uid, 30);
     plans = sortPlans(await getPlansOfStudent(state.user.uid));
     if (state.profile.personalId) {
       const personal = await getUser(state.profile.personalId);
@@ -1421,6 +1455,9 @@ async function showStudentHome() {
       <button class="nav-item" data-nav="historico">
         <span>📊</span><span>Histórico</span>
       </button>
+      <button class="nav-item" data-nav="mensagens" id="nav-msgs">
+        <span>💬</span><span>Msgs</span>
+      </button>
       <button class="nav-item" data-nav="perfil">
         <span>👤</span><span>Perfil</span>
       </button>
@@ -1435,6 +1472,14 @@ async function showStudentHome() {
     if (nf) {
       nf.style.color = 'var(--danger)';
       nf.innerHTML = `<span>💰</span><span style="color:var(--danger)">Financeiro · ${openFin}</span>`;
+    }
+  }
+  const replies = completed.filter(c => c.coachReply);
+  if (replies.length > 0) {
+    const nm = $('#nav-msgs');
+    if (nm) {
+      nm.style.color = 'var(--accent)';
+      nm.innerHTML = `<span>💬</span><span style="color:var(--accent)">Msgs · ${replies.length}</span>`;
     }
   }
 
@@ -1472,6 +1517,10 @@ async function showStudentHome() {
           </div>
           <div class="action-item" id="go-hist"><div class="icon">📊</div><div class="label">Histórico</div></div>
           <div class="action-item" id="go-profile"><div class="icon">👤</div><div class="label">Meu perfil</div></div>
+          <div class="action-item" id="go-msgs" style="${completed.filter(c=>c.coachReply).length ? 'border:1.5px solid var(--accent)' : ''}">
+            <div class="icon">💬</div>
+            <div class="label">${completed.filter(c=>c.coachReply).length ? `Msgs (${completed.filter(c=>c.coachReply).length})` : 'Mensagens'}</div>
+          </div>
         </div>
         <div class="page-title" style="margin-top:8px">Últimos treinos</div>
         <div id="home-recent"></div>
@@ -1480,6 +1529,7 @@ async function showStudentHome() {
       $('#go-fin').onclick = () => renderNav('financeiro');
       $('#go-hist').onclick = () => renderNav('historico');
       $('#go-profile')?.addEventListener('click', () => showUserProfile());
+      $('#go-msgs')?.addEventListener('click', () => renderNav('mensagens'));
       $('#student-photo')?.addEventListener('change', async (e) => {
         const f = e.target.files?.[0];
         if (!f) return;
@@ -1504,6 +1554,8 @@ async function showStudentHome() {
       renderStudentFinance(main, plans);
     } else if (nav === 'historico') {
       renderStudentHistory(main, completed);
+    } else if (nav === 'mensagens') {
+      renderStudentMessages(main, completed);
     } else if (nav === 'perfil') {
       showUserProfile();
     }
@@ -1888,6 +1940,33 @@ function showStudentCompletedDetail(completed, _ma, prevTonnage) {
   });
 }
 
+function renderStudentMessages(main, completed) {
+  const msgs = completed.filter(c => c.coachReply);
+  main.innerHTML = `
+    <div class="page-title">Mensagens do personal</div>
+    <p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">Respostas aos seus feedbacks de treino.</p>
+    <div id="msg-list"></div>
+  `;
+  const list = $('#msg-list');
+  if (!msgs.length) {
+    list.innerHTML = `<div class="empty"><p>Nenhuma mensagem ainda</p></div>`;
+    return;
+  }
+  msgs.forEach(c => {
+    list.appendChild(el('div', {
+      class: 'card',
+      style: 'cursor:pointer;border-color:var(--accent)',
+      onClick: () => showStudentCompletedDetail(c, null, null)
+    }, [
+      el('div', { style: 'font-weight:700', text: c.workoutName || 'Treino' }),
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) }),
+      el('div', { class: 'card note note-accent', style: 'margin-top:10px;margin-bottom:0', html: `<strong>Personal:</strong> ${c.coachReply}` }),
+      c.feedback ? el('div', { class: 'text-muted', style: 'font-size:0.85rem;margin-top:8px', text: `Seu feedback: ${c.feedback}` }) : null,
+      el('div', { style: 'font-size:0.8rem;color:var(--accent);margin-top:8px', text: 'Ver treino completo ›' })
+    ]));
+  });
+}
+
 async function showStudentWorkout(workout, routine) {
   const app = $('#app');
   const exercises = workout.exercises || [];
@@ -1910,6 +1989,7 @@ async function showStudentWorkout(workout, routine) {
     exerciseId: ex.exerciseId || null,
     muscleGroup: ex.muscleGroup || '',
     videoUrl: ex.videoUrl || '',
+    gifUrl: ex.gifUrl || '',
     restSeconds: Number(ex.restSeconds) || Number((ex.sets && ex.sets[0] && ex.sets[0].rest) || 60),
     difficulty: 'moderado',
     sets: (ex.sets || []).map(s => ({
@@ -2032,7 +2112,7 @@ async function showStudentWorkout(workout, routine) {
           </div>
         </div>
         <div class="ex-body" style="display:none;margin-top:12px">
-          ${ex.videoUrl ? `<div class="video-wrap"><iframe src="${videoToEmbed(ex.videoUrl)}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen frameborder="0"></iframe></div>` : ''}
+          ${(ex.gifUrl || ex.videoUrl) ? mediaHtml(ex.gifUrl || ex.videoUrl) : ''}
           <div class="form-group" style="margin-top:12px">
             <label class="form-label">Dificuldade deste exercício</label>
             <div class="diff-row">

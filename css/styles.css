@@ -421,23 +421,29 @@ body {
 /* ---------- Toast ---------- */
 .toast {
   position: fixed;
-  bottom: calc(24px + var(--safe-bottom));
+  bottom: calc(72px + var(--safe-bottom));
   left: 50%;
-  transform: translateX(-50%) translateY(120%);
+  transform: translateX(-50%) translateY(140%);
   background: var(--elevated);
   color: var(--text);
   padding: 12px 20px;
   border-radius: var(--radius-sm);
   font-size: 0.9rem;
   font-weight: 500;
-  z-index: 999;
-  transition: transform 0.25s ease;
+  z-index: 9999;
+  transition: transform 0.25s ease, opacity 0.25s ease;
   max-width: calc(100% - 32px);
   box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
 }
 
 .toast.show {
   transform: translateX(-50%) translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
 }
 
 .toast.success { border-left: 4px solid var(--success); }

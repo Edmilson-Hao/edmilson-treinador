@@ -30,16 +30,17 @@ export function el(tag, attrs = {}, children = []) {
 }
 
 export function toast(message, type = 'info') {
-  let t = document.querySelector('.toast');
-  if (!t) {
-    t = el('div', { class: 'toast' });
-    document.body.appendChild(t);
-  }
+  // remove toast antigo para não deixar “fantasma” na tela
+  document.querySelectorAll('.toast').forEach(n => n.remove());
+  const t = el('div', { class: `toast ${type}` });
   t.textContent = message;
-  t.className = `toast ${type}`;
+  document.body.appendChild(t);
   requestAnimationFrame(() => t.classList.add('show'));
   clearTimeout(t._timer);
-  t._timer = setTimeout(() => t.classList.remove('show'), 2800);
+  t._timer = setTimeout(() => {
+    t.classList.remove('show');
+    setTimeout(() => t.remove(), 300);
+  }, 2800);
 }
 
 export function formatDate(ts) {
@@ -121,6 +122,27 @@ export function videoToEmbed(url) {
 
   // Drive preview já pronto ou outro link
   return u;
+}
+
+export function isGifUrl(url) {
+  if (!url) return false;
+  const u = url.trim().toLowerCase();
+  return /\.(gif)(\?|$)/.test(u)
+    || u.includes('giphy.com')
+    || u.includes('tenor.com')
+    || u.includes('media.giphy')
+    || u.includes('.gif');
+}
+
+/** HTML de mídia do exercício (vídeo embed ou GIF) */
+export function mediaHtml(url) {
+  if (!url) return '';
+  if (isGifUrl(url)) {
+    return `<div class="video-wrap"><img src="${url}" alt="GIF do exercício" style="width:100%;height:100%;object-fit:contain;background:#000" loading="lazy"></div>`;
+  }
+  const src = videoToEmbed(url);
+  if (!src) return '';
+  return `<div class="video-wrap"><iframe src="${src}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen frameborder="0"></iframe></div>`;
 }
 
 /** @deprecated use videoToEmbed */
