@@ -19,6 +19,7 @@ export function onAuthChange(callback) {
 }
 
 export async function loginWithGoogle() {
+  guard('authGoogle', 5, 60000, true);
   try {
     const result = await auth.signInWithPopup(googleProvider);
     const user = result.user;
@@ -49,6 +50,7 @@ export async function loginWithGoogle() {
 }
 
 export async function loginWithEmail(email, password) {
+  guard('authEmail', 6, 60000, true);
   try {
     const result = await auth.signInWithEmailAndPassword(email, password);
     const profile = await getUser(result.user.uid);
@@ -85,6 +87,7 @@ export async function registerWithEmail(email, password, name, role = 'aluno', p
 
 /** Personal cria conta de aluno manualmente */
 export async function createStudentAccount(email, password, name, personalId, extra = {}) {
+  guard('createStudent', 3, 120000, true);
   // Usamos uma instância secundária para não deslogar o personal
   const secondaryApp = firebase.initializeApp(firebase.app().options, 'Secondary');
   const secondaryAuth = secondaryApp.auth();

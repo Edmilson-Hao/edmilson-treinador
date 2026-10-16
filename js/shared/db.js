@@ -10,15 +10,16 @@ let db = null;
 let auth = null;
 
 const LIMITS = {
-  students: 30,
-  exercises: 200,
-  routines: 20,
-  workouts: 30,
-  completed: 40,
-  feedbacks: 50,
-  plans: 20,
-  anamneses: 15,
-  reminders: 30
+  students: 25,      // ~10 no MVP; margem
+  exercises: 150,
+  routines: 15,
+  workouts: 25,
+  completed: 30,
+  feedbacks: 30,
+  plans: 25,
+  anamneses: 10,
+  reminders: 20,
+  chat: 40
 };
 
 export function initDb(firestore, authInstance) {
@@ -66,19 +67,25 @@ export async function updateUser(uid, data) {
 
 export async function findPersonalByInviteCode(code) {
   guard('findInvite', 5, 30000);
-  // Apenas 1 filtro de igualdade → sem índice composto
-  const snap = await col('users')
-    .where('inviteCode', '==', code.toUpperCase())
-    .limit(5)
-    .get();
-  const personal = snap.docs
-    .map(d => ({ id: d.id, ...d.data() }))
-    .find(u => u.role === 'personal');
-  return personal || null;
+  // role + inviteCode alinha com rules de list (só personals)
+  try {
+    const snap = await col('users')
+      .where('role', '==', 'personal')
+      .where('inviteCode', '==', code.toUpperCase())
+      .limit(1)
+      .get();
+    if (!snap.empty) {
+      const d = snap.docs[0];
+      return { id: d.id, ...d.data() };
+    }
+  } catch (e) {
+    console.warn('findInvite composite', e);
+  }
+  return null;
 }
 
 export async function getStudentsOfPersonal(personalId) {
-  guard('listStudents', 6, 15000);
+  guard('listStudents', 6, 20000, true);
   const snap = await col('users')
     .where('personalId', '==', personalId)
     .where('role', '==', 'aluno')
@@ -148,12 +155,16 @@ export async function deleteExercise(id) {
 }
 
 // ---------- ROUTINES ----------
-export async function getRoutinesOfStudent(studentId) {
+export async function getRoutinesOfStudent(studentId, opts = {}) {
   guard('listRoutines', 8, 12000);
-  const snap = await col('routines')
-    .where('studentId', '==', studentId)
-    .limit(LIMITS.routines)
-    .get();
+  // Personal DEVE filtrar por personalId (rules de list)
+  let q;
+  if (opts.personalId) {
+    q = col('routines').where('personalId', '==', opts.personalId).where('studentId', '==', studentId);
+  } else {
+    q = col('routines').where('studentId', '==', studentId);
+  }
+  const snap = await q.limit(LIMITS.routines).get();
   const list = snap.docs
     .map(d => ({ id: d.id, ...d.data() }))
     .filter(r => r.archived !== true);
@@ -277,7 +288,7 @@ export async function cleanupExpiredCoachReplies(personalId) {
 
 // ---------- CHAT (TTL 2 dias no cliente) ----------
 export async function sendChatMessage({ personalId, studentId, fromUid, text }) {
-  guard('chatSend', 20, 15000);
+  guard('chatSend', 10, 60000, true);
   const ref = await col('chatMessages').add({
     personalId,
     studentId,
@@ -289,7 +300,7 @@ export async function sendChatMessage({ personalId, studentId, fromUid, text }) 
 }
 
 export async function getChatMessages(personalId, studentId, limit = 50) {
-  guard('chatList', 10, 12000);
+  guard('chatList', 8, 15000, true);
   const snap = await col('chatMessages')
     .where('personalId', '==', personalId)
     .where('studentId', '==', studentId)
@@ -340,7 +351,7 @@ export async function getRemindersForPersonal(personalId) {
 
 // ---------- COMPLETED WORKOUTS ----------
 export async function saveCompletedWorkout(data) {
-  guard('saveCompleted', 5, 30000);
+  guard('saveCompleted', 4, 60000, true);
   const ref = await col('completedWorkouts').add({
     ...data,
     finishedAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -348,12 +359,15 @@ export async function saveCompletedWorkout(data) {
   return ref.id;
 }
 
-export async function getCompletedByStudent(studentId, limit = 30) {
+export async function getCompletedByStudent(studentId, limit = 30, opts = {}) {
   guard('listCompleted', 8, 12000);
-  const snap = await col('completedWorkouts')
-    .where('studentId', '==', studentId)
-    .limit(Math.min(limit, LIMITS.completed))
-    .get();
+  let q;
+  if (opts.personalId) {
+    q = col('completedWorkouts').where('personalId', '==', opts.personalId).where('studentId', '==', studentId);
+  } else {
+    q = col('completedWorkouts').where('studentId', '==', studentId);
+  }
+  const snap = await q.limit(Math.min(limit, LIMITS.completed)).get();
   const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
   // ordena no cliente (mais recente primeiro)
   return list.sort((a, b) => {
@@ -401,12 +415,15 @@ export async function markCoachReplyRead(id) {
 }
 
 // ---------- PLANS ----------
-export async function getPlansOfStudent(studentId) {
+export async function getPlansOfStudent(studentId, opts = {}) {
   guard('listPlans', 8, 12000);
-  const snap = await col('plans')
-    .where('studentId', '==', studentId)
-    .limit(LIMITS.plans)
-    .get();
+  let q;
+  if (opts.personalId) {
+    q = col('plans').where('personalId', '==', opts.personalId).where('studentId', '==', studentId);
+  } else {
+    q = col('plans').where('studentId', '==', studentId);
+  }
+  const snap = await q.limit(LIMITS.plans).get();
   const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
   return list.sort((a, b) => {
     const ta = a.dueDate?.toMillis?.() || 0;

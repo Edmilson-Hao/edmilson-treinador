@@ -30,10 +30,10 @@ service cloud.firestore {
                  || (isPersonal() && resource.data.personalId == request.auth.uid)
                  || (isSignedIn() && resource.data.role == 'personal');
 
-      // Personal lista seus alunos; qualquer logado pode listar personals (código de convite)
+      // Personals (convite) OU documentos cujo personalId é o usuário (alunos)
       allow list: if isSignedIn() && (
         resource.data.role == 'personal'
-        || (isPersonal() && resource.data.personalId == request.auth.uid)
+        || resource.data.personalId == request.auth.uid
       );
 
       allow create: if isOwner(userId)
@@ -57,6 +57,9 @@ service cloud.firestore {
 
       allow create: if isPersonal()
                     && request.resource.data.keys().hasAll(['name', 'personalId'])
+                    && request.resource.data.name is string
+                    && request.resource.data.name.size() > 0
+                    && request.resource.data.name.size() <= 120
                     && (
                       request.resource.data.personalId == request.auth.uid
                       || request.resource.data.personalId == '__global__'
@@ -116,12 +119,16 @@ service cloud.firestore {
         || resource.data.studentId == request.auth.uid
       );
       allow create: if isPersonal()
-                    && request.resource.data.personalId == request.auth.uid;
+                    && request.resource.data.personalId == request.auth.uid
+                    && request.resource.data.value is number
+                    && request.resource.data.value >= 0
+                    && request.resource.data.value <= 100000;
       allow update: if isSignedIn() && (
         (isPersonal() && resource.data.personalId == request.auth.uid)
         || (isAluno() && resource.data.studentId == request.auth.uid
             && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['status', 'studentClaimedAt']))
+                 .hasOnly(['status', 'studentClaimedAt'])
+            && request.resource.data.status in ['aguardando', 'pendente', 'ativo'])
       );
       allow delete: if isPersonal() && resource.data.personalId == request.auth.uid;
     }
@@ -134,7 +141,10 @@ service cloud.firestore {
       );
       allow create: if isSignedIn()
         && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.personalId is string
+        && request.resource.data.studentId is string
         && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
         && request.resource.data.text.size() <= 500;
       allow update: if false;
       allow delete: if isSignedIn() && (

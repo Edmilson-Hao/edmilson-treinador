@@ -34,6 +34,7 @@ const state = {
 async function boot() {
   // Carrega Firebase SDK via CDN (já no HTML)
   firebase.initializeApp(firebaseConfig);
+initAppCheckIfConfigured();
   const auth = firebase.auth();
   const db = firebase.firestore();
 
@@ -821,9 +822,16 @@ async function renderFeedbacksTab(content) {
 // ---------- DETALHE DO ALUNO (Personal) ----------
 async function showStudentDetail(student) {
   state.currentStudent = student;
-  const routines = await getRoutinesOfStudent(student.id);
-  const plans = sortPlans(await getPlansOfStudent(student.id));
-  const completed = await getCompletedByStudent(student.id, 10);
+  const pid = state.user.uid;
+  let routines = [], plans = [], completed = [];
+  try {
+    routines = await getRoutinesOfStudent(student.id, { personalId: pid });
+    plans = sortPlans(await getPlansOfStudent(student.id, { personalId: pid }));
+    completed = await getCompletedByStudent(student.id, 10, { personalId: pid });
+  } catch (e) {
+    console.error('showStudentDetail', e);
+    toast(e.message || 'Erro ao carregar dados do aluno', 'error');
+  }
 
   const app = $('#app');
   app.innerHTML = `
@@ -2750,7 +2758,7 @@ async function exportPersonalBackup() {
     data.routines = {};
     data.workouts = {};
     for (const s of students) {
-      const rts = await getRoutinesOfStudent(s.id);
+      const rts = await getRoutinesOfStudent(s.id, { personalId: state.user.uid });
       data.routines[s.id] = rts;
       for (const r of rts) {
         data.workouts[r.id] = await getWorkoutsOfRoutine(r.id, { personalId: state.user.uid });
