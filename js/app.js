@@ -146,6 +146,15 @@ function photoEl(url, name, sizeClass = '') {
 }
 
 /** Dono do app — único que edita a lista padrão */
+function isWorkoutActive(w) {
+  const now = Date.now();
+  const start = w.startDate?.toMillis?.() || 0;
+  const end = w.endDate?.toMillis?.() || null;
+  if (start && now < start) return false;
+  if (end && now > end) return false;
+  return true;
+}
+
 function isAppAdmin() {
   const email = (state.profile?.email || state.user?.email || '').toLowerCase();
   return state.profile?.isAdmin === true || email === 'edmilsonwp@gmail.com';
@@ -698,15 +707,20 @@ async function renderFeedbacksTab(content) {
   feedbacks.forEach(fb => {
     const card = el('div', { class: 'card' }, [
       el('div', { style: 'font-weight:600;margin-bottom:4px', text: fb.studentName || 'Aluno' }),
-      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(fb.finishedAt) }),
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${fb.workoutName || 'Treino'} · ${formatDateTime(fb.finishedAt)}` }),
       el('div', { style: 'margin:10px 0', text: fb.feedback || 'Sem comentário' }),
+      el('div', { class: 'form-group', style: 'margin-bottom:8px' }, [
+        el('label', { class: 'form-label', text: 'Resposta ao aluno (opcional)' }),
+        el('textarea', { class: 'form-textarea', id: `fb-reply-${fb.id}`, placeholder: 'Mensagem que o aluno verá no histórico...' })
+      ]),
       el('div', { class: 'btn-group' }, [
         el('button', {
           class: 'btn btn-sm btn-primary',
-          text: 'Resolver',
+          text: 'Resolver e enviar',
           onClick: async () => {
-            await resolveFeedback(fb.id);
-            toast('Feedback resolvido', 'success');
+            const reply = $(`#fb-reply-${fb.id}`)?.value.trim() || '';
+            await resolveFeedback(fb.id, reply);
+            toast(reply ? 'Feedback resolvido com mensagem' : 'Feedback resolvido', 'success');
             renderFeedbacksTab(content);
           }
         })
@@ -1001,10 +1015,20 @@ async function showRoutineDetail(routine, student) {
 }
 
 function showCreateWorkout(routine, student) {
+  const today = new Date().toISOString().slice(0, 10);
   const html = `
     <div class="form-group">
       <label class="form-label">Nome do treino</label>
       <input type="text" class="form-input" id="w-name" placeholder="Ex: Upper 1">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Início da vigência</label>
+      <input type="date" class="form-input" id="w-start" value="${today}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Fim da vigência</label>
+      <input type="date" class="form-input" id="w-end">
+      <p class="text-muted" style="font-size:0.75rem;margin-top:4px">O aluno só vê este treino entre essas datas. Vazio = sem limite de fim.</p>
     </div>
     <button class="btn btn-primary btn-block" id="btn-save-w">Criar treino</button>
   `;
@@ -1017,13 +1041,17 @@ function showCreateWorkout(routine, student) {
   $('#btn-save-w').onclick = async () => {
     const name = $('#w-name').value.trim();
     if (!name) return toast('Nome obrigatório', 'error');
+    const startVal = $('#w-start').value;
+    const endVal = $('#w-end').value;
     await createWorkout({
       routineId: routine.id,
       personalId: state.user.uid,
       studentId: student.id,
       name,
       order: 0,
-      exercises: []
+      exercises: [],
+      startDate: startVal ? firebase.firestore.Timestamp.fromDate(new Date(startVal + 'T00:00:00')) : firebase.firestore.Timestamp.now(),
+      endDate: endVal ? firebase.firestore.Timestamp.fromDate(new Date(endVal + 'T23:59:59')) : null
     });
     toast('Treino criado', 'success');
     overlay.remove();
@@ -1160,7 +1188,7 @@ function showEditSets(ex, idx, workout, routine, student) {
         <input type="text" class="form-input set-weight" data-i="${i}" value="${s.weight||''}">
       </div>
       <div style="flex:1">
-        <label class="form-label">Descanso(s)</label>
+        <label class="form-label">Descanso (segundos)</label>
         <input type="text" class="form-input set-rest" data-i="${i}" value="${s.rest||''}">
       </div>
     </div>
@@ -1496,7 +1524,9 @@ async function fillStudentRoutines(routines) {
   }
   rList.innerHTML = '';
   for (const r of routines) {
-    const workouts = await getWorkoutsOfRoutine(r.id);
+    const allW = await getWorkoutsOfRoutine(r.id);
+    const workouts = allW.filter(isWorkoutActive);
+    if (!workouts.length) continue;
     const card = el('div', { class: 'card' }, [
       el('div', { style: 'font-weight:700;color:var(--accent);margin-bottom:8px', text: r.name }),
       ...workouts.map(w => el('div', {
@@ -1512,6 +1542,9 @@ async function fillStudentRoutines(routines) {
       ]))
     ]);
     rList.appendChild(card);
+  }
+  if (!rList.children.length) {
+    rList.innerHTML = `<div class="empty"><p>Nenhum treino ativo no período</p></div>`;
   }
 }
 
@@ -1826,7 +1859,8 @@ function showStudentCompletedDetail(completed, _ma, prevTonnage) {
         </div>
         ${prevTonnage != null ? `<div style="margin-top:8px;font-size:0.85rem;color:var(--muted)">Treino anterior: ${prevTonnage} kg·rep ${m.tonnage > prevTonnage ? '<span style="color:var(--success)">↑ aumento</span>' : m.tonnage < prevTonnage ? '<span style="color:var(--danger)">↓ redução</span>' : '→ igual'}</div>` : ''}
         <div style="margin-top:8px">Intensidade: <strong>${diffLabel[completed.intensity] || completed.intensity || '—'}</strong></div>
-        ${completed.feedback ? `<div style="margin-top:8px">${completed.feedback}</div>` : ''}
+        ${completed.feedback ? `<div style="margin-top:8px"><strong>Seu feedback:</strong> ${completed.feedback}</div>` : ''}
+        ${completed.coachReply ? `<div class="card note note-accent" style="margin-top:10px"><strong>Resposta do personal:</strong><br>${completed.coachReply}</div>` : ''}
       </div>
       <div class="page-title">Por exercício</div>
       <div id="detail-exs"></div>
@@ -1857,17 +1891,26 @@ function showStudentCompletedDetail(completed, _ma, prevTonnage) {
 async function showStudentWorkout(workout, routine) {
   const app = $('#app');
   const exercises = workout.exercises || [];
-  const storageKey = `workout_draft_${state.user.uid}_${workout.id}`;
+  const storageKey = `workout_session_${state.user.uid}_${workout.id}`;
 
-  // Carrega rascunho (séries editadas + concluídos) do localStorage
-  let draft = { done: {}, performed: null };
-  try { draft = { done: {}, performed: null, ...JSON.parse(localStorage.getItem(storageKey) || '{}') }; } catch {}
+  let session = {
+    started: false,
+    startedAt: null,
+    done: {},
+    performed: null,
+    restEndsAt: null,
+    restExIdx: null
+  };
+  try {
+    session = { ...session, ...JSON.parse(localStorage.getItem(storageKey) || '{}') };
+  } catch {}
 
   const buildPerformed = () => exercises.map(ex => ({
     name: ex.name,
     exerciseId: ex.exerciseId || null,
     muscleGroup: ex.muscleGroup || '',
     videoUrl: ex.videoUrl || '',
+    restSeconds: Number(ex.restSeconds) || Number((ex.sets && ex.sets[0] && ex.sets[0].rest) || 60),
     difficulty: 'moderado',
     sets: (ex.sets || []).map(s => ({
       reps: Number(s.reps) || 0,
@@ -1876,25 +1919,44 @@ async function showStudentWorkout(workout, routine) {
     }))
   }));
 
-  // Se já existe rascunho com mesmo nº de exercícios, reutiliza (preserva kg/reps)
   let performed = buildPerformed();
-  if (draft.performed && draft.performed.length === performed.length) {
-    performed = draft.performed.map((p, i) => ({
+  if (session.performed && session.performed.length === performed.length) {
+    performed = session.performed.map((p, i) => ({
       ...performed[i],
       ...p,
       sets: (p.sets && p.sets.length) ? p.sets : performed[i].sets,
-      difficulty: p.difficulty || 'moderado'
+      difficulty: p.difficulty || 'moderado',
+      restSeconds: p.restSeconds || performed[i].restSeconds
     }));
   }
-  const doneMap = draft.done || {};
+  const doneMap = session.done || {};
 
   const persist = () => {
-    localStorage.setItem(storageKey, JSON.stringify({ done: doneMap, performed }));
+    session.done = doneMap;
+    session.performed = performed;
+    localStorage.setItem(storageKey, JSON.stringify(session));
   };
-  const clearDraft = () => localStorage.removeItem(storageKey);
+  const clearSession = () => localStorage.removeItem(storageKey);
+
+  let timerInterval = null;
+  const stopTimers = () => {
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  };
+
+  const fmtElapsed = (ms) => {
+    const s = Math.floor(ms / 1000);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+    return `${m}:${String(sec).padStart(2,'0')}`;
+  };
 
   const render = () => {
+    stopTimers();
     const doneCount = Object.values(doneMap).filter(Boolean).length;
+    const started = !!session.started;
+
     app.innerHTML = `
       <header class="app-header">
         <button class="icon-btn" id="btn-home" title="Início">🏠</button>
@@ -1902,14 +1964,18 @@ async function showStudentWorkout(workout, routine) {
         <button class="icon-btn" id="btn-back">←</button>
       </header>
       <div class="page" style="padding-bottom:100px">
+        ${started ? `<div id="session-timer" style="text-align:center;font-size:0.85rem;color:var(--muted);margin-bottom:8px;font-variant-numeric:tabular-nums">⏱ <span id="elapsed-val">0:00</span></div>` : ''}
         <div class="card note" style="font-size:0.85rem">
-          Toque no exercício para expandir. Edite <strong>Reps</strong> e <strong>Kg</strong>. Marque ao concluir.
+          ${started
+            ? 'Treino em andamento. Toque no exercício para expandir. Ajuste reps/kg e use o descanso.'
+            : 'Revise os exercícios e toque em <strong>Iniciar treino</strong> quando estiver pronto.'}
         </div>
-        <div id="workout-progress" style="font-size:0.85rem;color:var(--muted);margin-bottom:12px">
+        <div style="font-size:0.85rem;color:var(--muted);margin-bottom:12px">
           ${doneCount} de ${performed.length} exercícios concluídos
         </div>
         <div id="workout-exs"></div>
         <div class="card" style="margin-top:20px">
+          ${started ? `
           <div class="form-group">
             <label class="form-label">Como foi o treino no geral?</label>
             <select class="form-select" id="intensity">
@@ -1923,16 +1989,31 @@ async function showStudentWorkout(workout, routine) {
             <textarea class="form-textarea" id="feedback" placeholder="Como se sentiu, dores, dúvidas..."></textarea>
           </div>
           <button class="btn btn-success btn-block" id="btn-finish">Finalizar treino</button>
+          <button class="btn btn-outline btn-block" id="btn-cancel" style="margin-top:10px;color:var(--danger);border-color:var(--danger)">Cancelar treino</button>
+          ` : `
+          <button class="btn btn-primary btn-block" id="btn-start">Iniciar treino</button>
+          `}
         </div>
       </div>
     `;
 
-    $('#btn-home').onclick = () => showStudentHome();
-    $('#btn-back').onclick = () => showStudentHome();
+    $('#btn-home').onclick = () => { stopTimers(); showStudentHome(); };
+    $('#btn-back').onclick = () => { stopTimers(); showStudentHome(); };
+
+    if (started && session.startedAt) {
+      const tick = () => {
+        const el = $('#elapsed-val');
+        if (!el) return;
+        el.textContent = fmtElapsed(Date.now() - session.startedAt);
+      };
+      tick();
+      timerInterval = setInterval(tick, 1000);
+    }
 
     const list = $('#workout-exs');
     performed.forEach((ex, idx) => {
       const isDone = !!doneMap[idx];
+      const restSec = Number(ex.restSeconds) || Number(ex.sets?.[0]?.rest) || 60;
       const summarySets = (ex.sets || []).map(s => `${s.reps}×${s.weight || 0}kg`).join(' · ');
       const card = el('div', {
         class: 'card',
@@ -1947,7 +2028,7 @@ async function showStudentWorkout(workout, routine) {
               ${isDone ? '<span style="color:var(--success)">✓</span>' : ''}
               <span>${ex.name}</span>
             </div>
-            <div class="text-muted" style="font-size:0.8rem;margin-top:2px">${ex.sets.length} séries · ${summarySets || '—'}</div>
+            <div class="text-muted" style="font-size:0.8rem;margin-top:2px">${ex.sets.length} séries · ${summarySets || '—'} · descanso ${restSec}s</div>
           </div>
         </div>
         <div class="ex-body" style="display:none;margin-top:12px">
@@ -1966,9 +2047,15 @@ async function showStudentWorkout(workout, routine) {
             <div style="flex:1">Kg</div>
           </div>
           <div class="sets-edit"></div>
+          ${started ? `
+          <div class="rest-timer-box" style="margin-top:12px;padding:10px;background:var(--elevated);border-radius:var(--radius-sm);text-align:center">
+            <div style="font-size:0.75rem;color:var(--muted)">Descanso</div>
+            <div class="rest-countdown" data-idx="${idx}" style="font-size:1.4rem;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums">${restSec}s</div>
+            <button type="button" class="btn btn-sm btn-outline btn-start-rest" data-idx="${idx}" style="margin-top:6px">Iniciar descanso (${restSec}s)</button>
+          </div>
           <button type="button" class="btn btn-block ${isDone ? 'btn-outline' : 'btn-success'} btn-toggle-done" style="margin-top:12px">
             ${isDone ? '↩ Refazer exercício' : '✓ Concluir exercício'}
-          </button>
+          </button>` : `<p class="text-muted" style="font-size:0.8rem;margin-top:8px">Inicie o treino para registrar séries e descanso.</p>`}
         </div>
       `;
       list.appendChild(card);
@@ -1979,12 +2066,8 @@ async function showStudentWorkout(workout, routine) {
         row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px';
         row.innerHTML = `
           <div class="set-num">${si + 1}</div>
-          <div style="flex:1">
-            <input type="number" class="form-input" data-field="reps" data-set="${si}" value="${s.reps}" placeholder="Reps" min="0" inputmode="numeric">
-          </div>
-          <div style="flex:1">
-            <input type="number" class="form-input" data-field="weight" data-set="${si}" value="${s.weight}" placeholder="Kg" min="0" step="0.5" inputmode="decimal">
-          </div>
+          <div style="flex:1"><input type="number" class="form-input" data-field="reps" data-set="${si}" value="${s.reps}" min="0" inputmode="numeric" ${started?'':'disabled'}></div>
+          <div style="flex:1"><input type="number" class="form-input" data-field="weight" data-set="${si}" value="${s.weight}" min="0" step="0.5" inputmode="decimal" ${started?'':'disabled'}></div>
         `;
         setsEl.appendChild(row);
       });
@@ -2000,11 +2083,11 @@ async function showStudentWorkout(workout, routine) {
       card.querySelectorAll('.diff-btn').forEach(btn => {
         btn.onclick = (e) => {
           e.stopPropagation();
+          if (!started) return;
           performed[idx].difficulty = btn.dataset.d;
           persist();
           card.querySelectorAll('.diff-btn').forEach(b => {
             b.className = `btn btn-sm ${b.dataset.d === btn.dataset.d ? 'btn-primary' : 'btn-outline'} diff-btn`;
-            b.dataset.d = b.dataset.d;
           });
         };
       });
@@ -2012,32 +2095,90 @@ async function showStudentWorkout(workout, routine) {
       card.querySelectorAll('input[data-field]').forEach(inp => {
         const apply = () => {
           const si = +inp.dataset.set;
-          const field = inp.dataset.field;
-          performed[idx].sets[si][field] = parseFloat(inp.value) || 0;
+          performed[idx].sets[si][inp.dataset.field] = parseFloat(inp.value) || 0;
           persist();
-          // atualiza resumo no header
           const sum = performed[idx].sets.map(s => `${s.reps}×${s.weight || 0}kg`).join(' · ');
           const meta = card.querySelector('.text-muted');
-          if (meta) meta.textContent = `${performed[idx].sets.length} séries · ${sum}`;
+          if (meta) meta.textContent = `${performed[idx].sets.length} séries · ${sum} · descanso ${restSec}s`;
         };
         inp.addEventListener('input', apply);
-        inp.addEventListener('change', apply);
       });
 
-      card.querySelector('.btn-toggle-done').onclick = (e) => {
+      card.querySelector('.btn-start-rest')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const sec = restSec;
+        session.restEndsAt = Date.now() + sec * 1000;
+        session.restExIdx = idx;
+        persist();
+        const cd = card.querySelector('.rest-countdown');
+        const btn = card.querySelector('.btn-start-rest');
+        const tickRest = () => {
+          const left = Math.max(0, Math.ceil((session.restEndsAt - Date.now()) / 1000));
+          if (cd) cd.textContent = left > 0 ? `${left}s` : 'Pronto!';
+          if (left <= 0) {
+            if (btn) btn.textContent = `Iniciar descanso (${sec}s)`;
+            session.restEndsAt = null;
+            persist();
+            return;
+          }
+          requestAnimationFrame(() => setTimeout(tickRest, 200));
+        };
+        if (btn) btn.textContent = 'Descansando...';
+        tickRest();
+      });
+
+      // resume rest countdown if active
+      if (session.restEndsAt && session.restExIdx === idx) {
+        const left = Math.ceil((session.restEndsAt - Date.now()) / 1000);
+        if (left > 0) {
+          const cd = card.querySelector('.rest-countdown');
+          const btn = card.querySelector('.btn-start-rest');
+          if (btn) btn.textContent = 'Descansando...';
+          const tickRest = () => {
+            const l = Math.max(0, Math.ceil((session.restEndsAt - Date.now()) / 1000));
+            if (cd) cd.textContent = l > 0 ? `${l}s` : 'Pronto!';
+            if (l <= 0) {
+              if (btn) btn.textContent = `Iniciar descanso (${restSec}s)`;
+              session.restEndsAt = null;
+              persist();
+              return;
+            }
+            setTimeout(tickRest, 250);
+          };
+          tickRest();
+        }
+      }
+
+      card.querySelector('.btn-toggle-done')?.addEventListener('click', (e) => {
         e.stopPropagation();
         doneMap[idx] = !doneMap[idx];
         persist();
-        render(); // re-render seguro pois performed já está no draft
-      };
+        render();
+      });
     });
 
-    $('#btn-finish').onclick = async () => {
+    $('#btn-start')?.addEventListener('click', () => {
+      session.started = true;
+      session.startedAt = Date.now();
+      persist();
+      render();
+    });
+
+    $('#btn-cancel')?.addEventListener('click', () => {
+      if (!confirm('Cancelar este treino? O progresso de hoje será apagado.')) return;
+      stopTimers();
+      clearSession();
+      toast('Treino cancelado', 'success');
+      showStudentHome();
+    });
+
+    $('#btn-finish')?.addEventListener('click', async () => {
       try {
-        // garante valores atuais dos inputs
         persist();
-        const intensity = $('#intensity').value;
-        const feedback = $('#feedback').value.trim();
+        const intensity = $('#intensity')?.value || 'moderada';
+        const feedback = $('#feedback')?.value.trim() || '';
+        const durationSeconds = session.startedAt
+          ? Math.round((Date.now() - session.startedAt) / 1000) : 0;
         await saveCompletedWorkout({
           workoutId: workout.id,
           workoutName: workout.name,
@@ -2048,18 +2189,22 @@ async function showStudentWorkout(workout, routine) {
           intensity,
           feedback,
           exercisesPerformed: performed,
-          startedAt: firebase.firestore.Timestamp.now(),
-          durationSeconds: 0,
-          resolved: false
+          startedAt: session.startedAt
+            ? firebase.firestore.Timestamp.fromMillis(session.startedAt)
+            : firebase.firestore.Timestamp.now(),
+          durationSeconds,
+          resolved: false,
+          coachReply: null
         });
-        clearDraft();
+        stopTimers();
+        clearSession();
         toast('Treino concluído! Bom trabalho 💪', 'success');
         showStudentHome();
       } catch (e) {
         console.error(e);
         toast(e.message || 'Erro ao salvar treino', 'error');
       }
-    };
+    });
   };
 
   render();
@@ -2259,7 +2404,8 @@ async function showCompletedReport(completed, prevTonnage) {
         </div>
         ${prevTonnage != null ? `<div style="margin-top:8px;font-size:0.85rem;color:var(--muted)">Anterior: ${prevTonnage} kg·rep ${m.tonnage > prevTonnage ? '<span style="color:var(--success)">↑</span>' : m.tonnage < prevTonnage ? '<span style="color:var(--danger)">↓</span>' : '→'}</div>` : ''}
         <div style="margin-top:8px">Intensidade geral: <strong>${diffLabel[completed.intensity] || completed.intensity || '—'}</strong></div>
-        ${completed.feedback ? `<div style="margin-top:8px">${completed.feedback}</div>` : ''}
+        ${completed.feedback ? `<div style="margin-top:8px"><strong>Seu feedback:</strong> ${completed.feedback}</div>` : ''}
+        ${completed.coachReply ? `<div class="card note note-accent" style="margin-top:10px"><strong>Resposta do personal:</strong><br>${completed.coachReply}</div>` : ''}
       </div>
       <div class="page-title">Exercícios realizados</div>
       <div id="report-exs"></div>
