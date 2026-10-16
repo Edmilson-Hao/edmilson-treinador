@@ -4,6 +4,7 @@
 
 import { createUser, getUser, updateUser } from './db.js';
 import { toast, generateInviteCode } from './utils.js';
+import { guard } from './rateLimit.js';
 
 let auth = null;
 let googleProvider = null;
@@ -19,7 +20,7 @@ export function onAuthChange(callback) {
 }
 
 export async function loginWithGoogle() {
-  guard('authGoogle', 5, 60000, true);
+  guard('authGoogle', 8, 60000, true);
   try {
     const result = await auth.signInWithPopup(googleProvider);
     const user = result.user;
@@ -44,18 +45,27 @@ export async function loginWithGoogle() {
     return { user, profile };
   } catch (err) {
     console.error(err);
-    toast(err.message || 'Erro ao entrar com Google', 'error');
+    const code = err.code || '';
+    if (code === 'auth/popup-blocked' || code === 'auth/popup-closed-by-user') {
+      toast('Popup do Google bloqueado ou fechado. Permita popups neste site.', 'error');
+    } else if (err.code === 'rate-limit' || (err.message || '').includes('Muitas requisições')) {
+      toast(err.message, 'error');
+    } else {
+      toast(err.message || 'Erro ao entrar com Google', 'error');
+    }
     throw err;
   }
 }
 
 export async function loginWithEmail(email, password) {
-  guard('authEmail', 6, 60000, true);
+  guard('authEmail', 10, 60000, true);
   try {
     const result = await auth.signInWithEmailAndPassword(email, password);
-    const profile = await getUser(result.user.uid);
-    if (profile) {
-      await updateUser(result.user.uid, {});
+    let profile = null;
+    try {
+      profile = await getUser(result.user.uid);
+    } catch (e) {
+      console.warn('perfil após login', e);
     }
     return { user: result.user, profile };
   } catch (err) {
