@@ -138,11 +138,13 @@ export function isGifUrl(url) {
 export function mediaHtml(url) {
   if (!url) return '';
   if (isGifUrl(url)) {
-    return `<div class="video-wrap"><img src="${url}" alt="GIF do exercício" style="width:100%;height:100%;object-fit:contain;background:#000" loading="lazy"></div>`;
+    // Classe media = largura total, altura natural (vertical ou horizontal)
+    return `<div class="video-wrap video-wrap--media"><img src="${url}" alt="GIF do exercício" loading="lazy" decoding="async"></div>`;
   }
   const src = videoToEmbed(url);
   if (!src) return '';
-  return `<div class="video-wrap"><iframe src="${src}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen frameborder="0"></iframe></div>`;
+  // YouTube/Drive: retangular 16:9 em largura total
+  return `<div class="video-wrap video-wrap--wide"><iframe src="${src}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen frameborder="0"></iframe></div>`;
 }
 
 /** @deprecated use videoToEmbed */

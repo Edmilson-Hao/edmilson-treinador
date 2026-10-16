@@ -1291,16 +1291,19 @@ function renderWorkoutExercises(workout, routine, student) {
     return;
   }
   exercises.forEach((ex, idx) => {
-    const setsHtml = (ex.sets || []).map((s, i) => `
-      <div class="set-row">
-        <div class="set-num">${i + 1}</div>
-        <div class="set-info">${s.reps || '—'} reps</div>
-        <div class="set-value">${s.weight || '0'} kg</div>
-      </div>
-    `).join('');
+    const tech = ex.technique || 'normal';
+    const setsHtml = (ex.sets || []).map((s, i) => {
+      let info = `${s.reps || '—'} reps`;
+      if (tech === 'drop' && s.drops?.length) info += ' → ' + s.drops.map(d => `${d.reps}×${d.weight||'?'}kg`).join(' → ');
+      if (tech === 'rest_pause') info += ` · RP ${s.rpRounds||3} (pausa ${s.rpRest||15}s)`;
+      if (tech === 'cluster') info += ` · ${s.clusterCount||3}×${s.clusterReps||3}`;
+      return `<div class="set-row"><div class="set-num">${i + 1}</div><div class="set-info">${info}</div><div class="set-value">${s.weight || '0'} kg</div></div>`;
+    }).join('');
+
+    const title = `${ex.name} ${techniqueBadge(tech)}${tech==='combined'&&ex.combinedName?` <span class="text-muted">+ ${ex.combinedName}</span>`:''}`;
 
     const card = el('div', { class: 'card' }, [
-      el('div', { style: 'font-weight:600;margin-bottom:6px', text: ex.name }),
+      el('div', { style: 'font-weight:600;margin-bottom:6px;display:flex;flex-wrap:wrap;gap:6px;align-items:center', html: title }),
       ex.videoUrl ? el('div', { class: 'video-wrap' }, [
         el('iframe', { src: videoToEmbed(ex.videoUrl), allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share', allowfullscreen: true, frameborder: '0', referrerpolicy: 'strict-origin-when-cross-origin' })
       ]) : null,
@@ -1366,6 +1369,7 @@ function showPickExercise(allExercises, workout, routine, student) {
         videoUrl: ex.videoUrl || '',
         gifUrl: ex.gifUrl || '',
         notes: ex.notes || '',
+        technique: 'normal',
         sets: [{ reps: '10', weight: '0', rest: '60', done: false }]
       });
       await updateWorkout(workout.id, { exercises: workout.exercises });
@@ -1376,28 +1380,111 @@ function showPickExercise(allExercises, workout, routine, student) {
   });
 }
 
+
+const TECHNIQUE_OPTS = [
+  { id: 'normal', label: 'Normal' },
+  { id: 'drop', label: 'Drop set' },
+  { id: 'rest_pause', label: 'Rest-pause' },
+  { id: 'cluster', label: 'Cluster set' },
+  { id: 'combined', label: 'Combinado / bi-set' }
+];
+function techniqueLabel(id) {
+  return (TECHNIQUE_OPTS.find(t => t.id === id) || {}).label || 'Normal';
+}
+function techniqueBadge(id) {
+  if (!id || id === 'normal') return '';
+  return `<span class="badge" style="background:var(--accent);color:#0f172a;font-size:0.7rem">${techniqueLabel(id)}</span>`;
+}
+
 function showEditSets(ex, idx, workout, routine, student) {
   const sets = ex.sets || [{ reps: '10', weight: '0', rest: '60' }];
-  let html = sets.map((s, i) => `
-    <div class="form-group" style="display:flex;gap:8px;align-items:flex-end">
-      <div style="flex:1">
-        <label class="form-label">Reps</label>
-        <input type="text" class="form-input set-reps" data-i="${i}" value="${s.reps||''}">
-      </div>
-      <div style="flex:1">
-        <label class="form-label">Carga</label>
-        <input type="text" class="form-input set-weight" data-i="${i}" value="${s.weight||''}">
-      </div>
-      <div style="flex:1">
-        <label class="form-label">Descanso (segundos)</label>
-        <input type="text" class="form-input set-rest" data-i="${i}" value="${s.rest||''}">
-      </div>
-    </div>
-  `).join('');
+  const tech = ex.technique || 'normal';
 
-  html += `
+  const techOptions = TECHNIQUE_OPTS.map(o =>
+    `<option value="${o.id}" ${tech === o.id ? 'selected' : ''}>${o.label}</option>`
+  ).join('');
+
+  const setsHtml = sets.map((s, i) => {
+    let extra = '';
+    if (tech === 'drop') {
+      const drops = s.drops || [{ reps: '8', weight: '' }, { reps: '6', weight: '' }];
+      extra = `<div style="margin:8px 0 0 12px;padding:8px;background:var(--elevated);border-radius:8px;font-size:0.85rem">
+        <div class="text-muted" style="margin-bottom:6px">Drops (reduza a carga sem descanso longo)</div>
+        ${drops.map((d, di) => `
+          <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
+            <span style="width:20px;color:var(--muted)">↓${di + 1}</span>
+            <input type="text" class="form-input drop-reps" data-set="${i}" data-d="${di}" value="${d.reps || ''}" placeholder="Reps" style="flex:1">
+            <input type="text" class="form-input drop-weight" data-set="${i}" data-d="${di}" value="${d.weight || ''}" placeholder="Kg" style="flex:1">
+          </div>`).join('')}
+      </div>`;
+    }
+    if (tech === 'rest_pause') {
+      extra = `<div style="margin:8px 0 0 12px;padding:8px;background:var(--elevated);border-radius:8px;font-size:0.85rem">
+        <div class="text-muted" style="margin-bottom:6px">Rest-pause: mini-séries com pausa curta</div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+          <label style="flex:1">Mini-séries
+            <input type="number" class="form-input rp-rounds" data-set="${i}" value="${s.rpRounds || 3}" min="2" max="6">
+          </label>
+          <label style="flex:1">Pausa (s)
+            <input type="number" class="form-input rp-rest" data-set="${i}" value="${s.rpRest || 15}" min="5" max="45">
+          </label>
+        </div>
+        <p class="text-muted" style="font-size:0.75rem;margin:0">Ex.: 8+4+3 reps com ${s.rpRest || 15}s entre elas</p>
+      </div>`;
+    }
+    if (tech === 'cluster') {
+      extra = `<div style="margin:8px 0 0 12px;padding:8px;background:var(--elevated);border-radius:8px;font-size:0.85rem">
+        <div class="text-muted" style="margin-bottom:6px">Cluster: blocos de reps com pausa intra-série</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <label style="flex:1">Clusters
+            <input type="number" class="form-input cl-count" data-set="${i}" value="${s.clusterCount || 3}" min="2" max="8">
+          </label>
+          <label style="flex:1">Reps/cluster
+            <input type="number" class="form-input cl-reps" data-set="${i}" value="${s.clusterReps || 3}" min="1" max="10">
+          </label>
+          <label style="flex:1">Pausa (s)
+            <input type="number" class="form-input cl-rest" data-set="${i}" value="${s.clusterRest || 15}" min="5" max="30">
+          </label>
+        </div>
+      </div>`;
+    }
+    return `
+    <div class="card" style="margin-bottom:10px;padding:12px" data-set-block="${i}">
+      <div style="font-weight:600;margin-bottom:8px;color:var(--accent)">Série ${i + 1}</div>
+      <div style="display:flex;gap:8px;align-items:flex-end">
+        <div style="flex:1"><label class="form-label">Reps</label>
+          <input type="text" class="form-input set-reps" data-i="${i}" value="${s.reps || ''}"></div>
+        <div style="flex:1"><label class="form-label">Carga (kg)</label>
+          <input type="text" class="form-input set-weight" data-i="${i}" value="${s.weight || ''}"></div>
+        <div style="flex:1"><label class="form-label">Descanso (s)</label>
+          <input type="text" class="form-input set-rest" data-i="${i}" value="${s.rest || '60'}"></div>
+      </div>
+      ${extra}
+    </div>`;
+  }).join('');
+
+  const combinedBlock = tech === 'combined' ? `
+    <div class="card note" style="margin-bottom:12px">
+      <div class="form-group" style="margin-bottom:8px">
+        <label class="form-label">2º exercício (combinado / bi-set)</label>
+        <input type="text" class="form-input" id="ex-combined-name" value="${ex.combinedName || ''}" placeholder="Ex.: Tríceps pulley">
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">Link vídeo/GIF do 2º (opcional)</label>
+        <input type="url" class="form-input" id="ex-combined-media" value="${ex.combinedMedia || ''}" placeholder="https://...">
+      </div>
+      <p class="text-muted" style="font-size:0.75rem;margin-top:8px">Aluno faz A e B alternados na mesma série (ou um atrás do outro, sem descanso longo).</p>
+    </div>` : '';
+
+  const html = `
+    <div class="form-group">
+      <label class="form-label">Técnica da série / exercício</label>
+      <select class="form-select" id="ex-technique">${techOptions}</select>
+    </div>
+    ${combinedBlock}
+    <div id="sets-blocks">${setsHtml}</div>
     <button class="btn btn-outline btn-block" id="btn-add-set" style="margin-bottom:12px">+ Série</button>
-    <button class="btn btn-primary btn-block" id="btn-save-sets">Salvar séries</button>
+    <button class="btn btn-primary btn-block" id="btn-save-sets">Salvar</button>
   `;
 
   const overlay = document.createElement('div');
@@ -1406,27 +1493,79 @@ function showEditSets(ex, idx, workout, routine, student) {
   document.body.appendChild(overlay);
   $('#close-modal').onclick = () => overlay.remove();
 
+  $('#ex-technique').onchange = () => {
+    // persiste campos básicos e reabre com nova técnica
+    const newSets = collectSetsFromForm(tech);
+    workout.exercises[idx].sets = newSets;
+    workout.exercises[idx].technique = $('#ex-technique').value;
+    if ($('#ex-combined-name')) {
+      workout.exercises[idx].combinedName = $('#ex-combined-name').value.trim();
+      workout.exercises[idx].combinedMedia = $('#ex-combined-media').value.trim();
+    }
+    overlay.remove();
+    showEditSets(workout.exercises[idx], idx, workout, routine, student);
+  };
+
+  function collectSetsFromForm(currentTech) {
+    const techNow = $('#ex-technique')?.value || currentTech || 'normal';
+    const newSets = [];
+    $$('.set-reps').forEach((input, i) => {
+      const row = {
+        reps: input.value,
+        weight: $$('.set-weight')[i]?.value || '0',
+        rest: $$('.set-rest')[i]?.value || '60',
+        done: false
+      };
+      if (techNow === 'drop') {
+        row.drops = [];
+        $$(`.drop-reps[data-set="${i}"]`).forEach((dr, di) => {
+          row.drops.push({
+            reps: dr.value,
+            weight: $$(`.drop-weight[data-set="${i}"]`)[di]?.value || ''
+          });
+        });
+        if (!row.drops.length) row.drops = [{ reps: '8', weight: '' }, { reps: '6', weight: '' }];
+      }
+      if (techNow === 'rest_pause') {
+        row.rpRounds = parseInt($$(`.rp-rounds[data-set="${i}"]`)[0]?.value || '3', 10);
+        row.rpRest = parseInt($$(`.rp-rest[data-set="${i}"]`)[0]?.value || '15', 10);
+      }
+      if (techNow === 'cluster') {
+        row.clusterCount = parseInt($$(`.cl-count[data-set="${i}"]`)[0]?.value || '3', 10);
+        row.clusterReps = parseInt($$(`.cl-reps[data-set="${i}"]`)[0]?.value || '3', 10);
+        row.clusterRest = parseInt($$(`.cl-rest[data-set="${i}"]`)[0]?.value || '15', 10);
+      }
+      newSets.push(row);
+    });
+    return newSets;
+  }
+
   $('#btn-add-set').onclick = () => {
-    // simples: recarrega com uma série a mais
-    ex.sets = ex.sets || [];
+    ex.sets = collectSetsFromForm(tech);
+    ex.technique = $('#ex-technique').value;
     ex.sets.push({ reps: '10', weight: '0', rest: '60' });
+    if ($('#ex-combined-name')) {
+      ex.combinedName = $('#ex-combined-name').value.trim();
+      ex.combinedMedia = $('#ex-combined-media').value.trim();
+    }
     overlay.remove();
     showEditSets(ex, idx, workout, routine, student);
   };
 
   $('#btn-save-sets').onclick = async () => {
-    const newSets = [];
-    $$('.set-reps').forEach((input, i) => {
-      newSets.push({
-        reps: input.value,
-        weight: $$('.set-weight')[i].value,
-        rest: $$('.set-rest')[i].value,
-        done: false
-      });
-    });
+    const techNow = $('#ex-technique').value;
+    const newSets = collectSetsFromForm(techNow);
     workout.exercises[idx].sets = newSets;
+    workout.exercises[idx].technique = techNow;
+    if (techNow === 'combined') {
+      workout.exercises[idx].combinedName = $('#ex-combined-name')?.value.trim() || '';
+      workout.exercises[idx].combinedMedia = $('#ex-combined-media')?.value.trim() || '';
+    } else {
+      delete workout.exercises[idx].combinedName;
+      delete workout.exercises[idx].combinedMedia;
+    }
     await updateWorkout(workout.id, { exercises: workout.exercises });
-    toast('Séries salvas', 'success');
+    toast('Séries e técnica salvas', 'success');
     overlay.remove();
     showWorkoutEditor(workout, routine, student);
   };
@@ -2182,12 +2321,21 @@ async function showStudentWorkout(workout, routine) {
     muscleGroup: ex.muscleGroup || '',
     videoUrl: ex.videoUrl || '',
     gifUrl: ex.gifUrl || '',
+    technique: ex.technique || 'normal',
+    combinedName: ex.combinedName || '',
+    combinedMedia: ex.combinedMedia || '',
     restSeconds: Number(ex.restSeconds) || Number((ex.sets && ex.sets[0] && ex.sets[0].rest) || 60),
     difficulty: 'moderado',
     sets: (ex.sets || []).map(s => ({
       reps: Number(s.reps) || 0,
       weight: Number(s.weight) || 0,
-      rest: Number(s.rest) || 60
+      rest: Number(s.rest) || 60,
+      drops: s.drops || null,
+      rpRounds: s.rpRounds || null,
+      rpRest: s.rpRest || null,
+      clusterCount: s.clusterCount || null,
+      clusterReps: s.clusterReps || null,
+      clusterRest: s.clusterRest || null
     }))
   }));
 
@@ -2296,15 +2444,23 @@ async function showStudentWorkout(workout, routine) {
         <div class="ex-header" style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none">
           <span class="ex-chevron" style="color:var(--accent);transition:transform .15s">▶</span>
           <div style="flex:1">
-            <div style="font-weight:600;display:flex;align-items:center;gap:8px">
+            <div style="font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
               ${isDone ? '<span style="color:var(--success)">✓</span>' : ''}
-              <span>${ex.name}</span>
+              <span>${ex.name}${ex.combinedName ? ' + ' + ex.combinedName : ''}</span>
+              ${techniqueBadge(ex.technique)}
             </div>
             <div class="text-muted" style="font-size:0.8rem;margin-top:2px">${ex.sets.length} séries · ${summarySets || '—'} · descanso ${restSec}s</div>
           </div>
         </div>
         <div class="ex-body" style="display:none;margin-top:12px">
           ${(ex.gifUrl || ex.videoUrl) ? mediaHtml(ex.gifUrl || ex.videoUrl) : ''}
+          ${ex.combinedMedia ? mediaHtml(ex.combinedMedia) : ''}
+          ${ex.technique && ex.technique !== 'normal' ? `<div class="card note" style="font-size:0.8rem;margin:8px 0">${
+            ex.technique === 'drop' ? '📉 <strong>Drop set:</strong> faça a série principal e reduza a carga nos drops sem descanso longo.' :
+            ex.technique === 'rest_pause' ? '⏱ <strong>Rest-pause:</strong> vá perto da falha, pause segundos e complete as mini-séries.' :
+            ex.technique === 'cluster' ? '🔹 <strong>Cluster:</strong> quebre as reps em blocos com pausa curta entre clusters.' :
+            ex.technique === 'combined' ? `🔗 <strong>Combinado:</strong> alterne com <em>${ex.combinedName || 'o 2º exercício'}</em> na mesma série.` : ''
+          }</div>` : ''}
           <div class="form-group" style="margin-top:12px">
             <label class="form-label">Dificuldade deste exercício</label>
             <div class="diff-row">
@@ -2334,14 +2490,34 @@ async function showStudentWorkout(workout, routine) {
 
       const setsEl = card.querySelector('.sets-edit');
       ex.sets.forEach((s, si) => {
+        const wrap = document.createElement('div');
+        wrap.style.marginBottom = '10px';
         const row = document.createElement('div');
-        row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px';
+        row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:4px';
         row.innerHTML = `
           <div class="set-num">${si + 1}</div>
           <div style="flex:1"><input type="number" class="form-input" data-field="reps" data-set="${si}" value="${s.reps}" min="0" inputmode="numeric" ${started?'':'disabled'}></div>
           <div style="flex:1"><input type="number" class="form-input" data-field="weight" data-set="${si}" value="${s.weight}" min="0" step="0.5" inputmode="decimal" ${started?'':'disabled'}></div>
         `;
-        setsEl.appendChild(row);
+        wrap.appendChild(row);
+        let hint = '';
+        if (ex.technique === 'drop' && s.drops?.length) {
+          hint = 'Drops: ' + s.drops.map(d => `${d.reps} reps @ ${d.weight || '?'} kg`).join(' → ');
+        } else if (ex.technique === 'rest_pause') {
+          hint = `Rest-pause: ${s.rpRounds || 3} mini-séries · pausa ${s.rpRest || 15}s`;
+        } else if (ex.technique === 'cluster') {
+          hint = `Cluster: ${s.clusterCount || 3} × ${s.clusterReps || 3} reps · pausa ${s.clusterRest || 15}s`;
+        } else if (ex.technique === 'combined' && ex.combinedName) {
+          hint = `Depois: ${ex.combinedName}`;
+        }
+        if (hint) {
+          const h = document.createElement('div');
+          h.className = 'text-muted';
+          h.style.cssText = 'font-size:0.75rem;padding-left:36px';
+          h.textContent = hint;
+          wrap.appendChild(h);
+        }
+        setsEl.appendChild(wrap);
       });
 
       const body = card.querySelector('.ex-body');
