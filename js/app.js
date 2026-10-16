@@ -4,7 +4,7 @@
 
 import { firebaseConfig } from './firebase-config.js';
 import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEmail, logout, createStudentAccount } from './shared/auth.js';
-import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, getGlobalExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan } from './shared/db.js';
+import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, getGlobalExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, markCoachReplyRead, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan } from './shared/db.js';
 import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, mediaHtml, isGifUrl, confirmDialog, generateInviteCode, compressImageToBase64 } from './shared/utils.js';
 
 // Captura erros de rate-limit e mostra toast amigável
@@ -494,21 +494,41 @@ async function renderPersonalTab(tab, students, stats) {
       return;
     }
     content.innerHTML = `
-      <button class="btn btn-primary btn-block" id="btn-add-student" style="margin-bottom:16px">+ Adicionar aluno</button>
+      <button class="btn btn-primary btn-block" id="btn-add-student" style="margin-bottom:12px">+ Adicionar aluno</button>
+      <div class="form-group" style="margin-bottom:12px">
+        <input type="search" class="form-input" id="student-search" placeholder="🔍 Buscar aluno (nome, e-mail, telefone)..." autocomplete="off">
+      </div>
       <div id="students-list"></div>
     `;
     $('#btn-add-student').onclick = showAddStudentModal;
     const list = $('#students-list');
-    students.forEach(s => {
-      const card = el('div', { class: 'student-card', onClick: () => showStudentDetail(s) }, [
-        s.photoURL ? el('img', { class: 'avatar', src: s.photoURL, style: 'object-fit:cover' }) : el('div', { class: 'avatar', text: initials(s.name) }),
-        el('div', { class: 'student-info' }, [
-          el('div', { class: 'student-name', text: s.name }),
-          el('div', { class: 'student-meta', text: s.email || '' })
-        ]),
-        el('div', { html: '›', style: 'color:var(--muted);font-size:1.4rem' })
-      ]);
-      list.appendChild(card);
+    const renderStudents = (items) => {
+      list.innerHTML = '';
+      if (!items.length) {
+        list.innerHTML = `<div class="empty"><p>Nenhum aluno encontrado</p></div>`;
+        return;
+      }
+      items.forEach(s => {
+        const card = el('div', { class: 'student-card', onClick: () => showStudentDetail(s) }, [
+          s.photoURL ? el('img', { class: 'avatar', src: s.photoURL, style: 'object-fit:cover' }) : el('div', { class: 'avatar', text: initials(s.name) }),
+          el('div', { class: 'student-info' }, [
+            el('div', { class: 'student-name', text: s.name }),
+            el('div', { class: 'student-meta', text: s.phone || s.email || '' })
+          ]),
+          el('div', { html: '›', style: 'color:var(--muted);font-size:1.4rem' })
+        ]);
+        list.appendChild(card);
+      });
+    };
+    renderStudents(students);
+    $('#student-search')?.addEventListener('input', () => {
+      const q = ($('#student-search').value || '').trim().toLowerCase();
+      if (!q) return renderStudents(students);
+      renderStudents(students.filter(s =>
+        (s.name || '').toLowerCase().includes(q) ||
+        (s.email || '').toLowerCase().includes(q) ||
+        (s.phone || '').toLowerCase().includes(q)
+      ));
     });
   }
 
@@ -1474,7 +1494,7 @@ async function showStudentHome() {
       nf.innerHTML = `<span>💰</span><span style="color:var(--danger)">Financeiro · ${openFin}</span>`;
     }
   }
-  const replies = completed.filter(c => c.coachReply);
+  const replies = unreadCoachReplies(completed);
   if (replies.length > 0) {
     const nm = $('#nav-msgs');
     if (nm) {
@@ -1517,9 +1537,9 @@ async function showStudentHome() {
           </div>
           <div class="action-item" id="go-hist"><div class="icon">📊</div><div class="label">Histórico</div></div>
           <div class="action-item" id="go-profile"><div class="icon">👤</div><div class="label">Meu perfil</div></div>
-          <div class="action-item" id="go-msgs" style="${completed.filter(c=>c.coachReply).length ? 'border:1.5px solid var(--accent)' : ''}">
+          <div class="action-item" id="go-msgs" style="${unreadCoachReplies(completed).length ? 'border:1.5px solid var(--accent)' : ''}">
             <div class="icon">💬</div>
-            <div class="label">${completed.filter(c=>c.coachReply).length ? `Msgs (${completed.filter(c=>c.coachReply).length})` : 'Mensagens'}</div>
+            <div class="label">${unreadCoachReplies(completed).length ? `Msgs (${unreadCoachReplies(completed).length})` : 'Mensagens'}</div>
           </div>
         </div>
         <div class="page-title" style="margin-top:8px">Últimos treinos</div>
@@ -1720,6 +1740,10 @@ function movingAverage(values, window = 3) {
 
 
 /** Filtra treinos por período */
+function unreadCoachReplies(completed) {
+  return completed.filter(c => c.coachReply && !c.coachReplyRead);
+}
+
 function sortPlans(plans) {
   const rank = { aguardando: 0, pendente: 1, ativo: 1, recusado: 2, pago: 3 };
   return [...plans].sort((a, b) => {
@@ -1920,6 +1944,9 @@ function showStudentCompletedDetail(completed, _ma, prevTonnage) {
   `;
   $('#btn-home').onclick = () => showStudentHome();
   $('#btn-back').onclick = () => showStudentHome();
+  if (completed.coachReply && !completed.coachReplyRead && completed.id) {
+    markCoachReplyRead(completed.id).then(() => { completed.coachReplyRead = true; }).catch(() => {});
+  }
   const list = $('#detail-exs');
   if (!m.byEx.length) {
     list.innerHTML = `<p class="text-muted">Sem detalhamento de séries (treino antigo).</p>`;
@@ -1941,10 +1968,14 @@ function showStudentCompletedDetail(completed, _ma, prevTonnage) {
 }
 
 function renderStudentMessages(main, completed) {
-  const msgs = completed.filter(c => c.coachReply);
+  const unread = unreadCoachReplies(completed);
+  const read = completed.filter(c => c.coachReply && c.coachReplyRead);
+  const msgs = [...unread, ...read];
   main.innerHTML = `
     <div class="page-title">Mensagens do personal</div>
-    <p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">Respostas aos seus feedbacks de treino.</p>
+    <p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">
+      ${unread.length ? `<strong style="color:var(--accent)">${unread.length} não lida(s)</strong> · ` : ''}Respostas aos seus feedbacks.
+    </p>
     <div id="msg-list"></div>
   `;
   const list = $('#msg-list');
@@ -1953,12 +1984,24 @@ function renderStudentMessages(main, completed) {
     return;
   }
   msgs.forEach(c => {
+    const isUnread = !c.coachReplyRead;
     list.appendChild(el('div', {
       class: 'card',
-      style: 'cursor:pointer;border-color:var(--accent)',
-      onClick: () => showStudentCompletedDetail(c, null, null)
+      style: `cursor:pointer;${isUnread ? 'border:1.5px solid var(--accent)' : ''}`,
+      onClick: async () => {
+        if (isUnread) {
+          try {
+            await markCoachReplyRead(c.id);
+            c.coachReplyRead = true;
+          } catch (e) { console.warn(e); }
+        }
+        showStudentCompletedDetail(c, null, null);
+      }
     }, [
-      el('div', { style: 'font-weight:700', text: c.workoutName || 'Treino' }),
+      el('div', { style: 'display:flex;justify-content:space-between;gap:8px' }, [
+        el('div', { style: 'font-weight:700', text: c.workoutName || 'Treino' }),
+        isUnread ? el('span', { class: 'badge', style: 'background:var(--accent);color:#000', text: 'Nova' }) : null
+      ]),
       el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) }),
       el('div', { class: 'card note note-accent', style: 'margin-top:10px;margin-bottom:0', html: `<strong>Personal:</strong> ${c.coachReply}` }),
       c.feedback ? el('div', { class: 'text-muted', style: 'font-size:0.85rem;margin-top:8px', text: `Seu feedback: ${c.feedback}` }) : null,
@@ -2307,12 +2350,26 @@ async function renderFinanceiroTab(content) {
 
   const pending = plans.filter(p => p.status === 'aguardando');
   const filterSel = content.dataset.finFilter || 'todos';
+  const studentFilter = content.dataset.finStudent || '';
+  const periodFilter = content.dataset.finPeriod || 'todos';
+
+  const inPeriod = (p) => {
+    if (periodFilter === 'todos') return true;
+    const ref = p.dueDate || p.createdAt || p.paidAt;
+    if (!ref) return periodFilter === 'todos';
+    const t = ref.toMillis ? ref.toMillis() : new Date(ref).getTime();
+    const now = Date.now();
+    const ms = { semana: 7, mes: 30, trimestre: 90, ano: 365 }[periodFilter];
+    if (!ms) return true;
+    return now - t <= ms * 86400000;
+  };
 
   const filtered = plans.filter(p => {
-    if (filterSel === 'todos') return true;
-    if (filterSel === 'aguardando') return p.status === 'aguardando';
-    if (filterSel === 'abertos') return p.status === 'pendente' || p.status === 'ativo';
-    if (filterSel === 'pagos') return p.status === 'pago';
+    if (filterSel === 'aguardando' && p.status !== 'aguardando') return false;
+    if (filterSel === 'abertos' && !(p.status === 'pendente' || p.status === 'ativo' || p.status === 'recusado')) return false;
+    if (filterSel === 'pagos' && p.status !== 'pago') return false;
+    if (studentFilter && p.studentId !== studentFilter) return false;
+    if (!inPeriod(p)) return false;
     return true;
   });
 
@@ -2326,9 +2383,28 @@ async function renderFinanceiroTab(content) {
       <span style="font-size:1.4rem">🔔</span>
       <div><strong>${pending.length}</strong> aluno(s) sinalizaram pagamento — confirme abaixo</div>
     </div>` : ''}
+    <div class="card" style="margin-bottom:12px">
+      <div class="form-group" style="margin-bottom:10px">
+        <label class="form-label">Aluno</label>
+        <select class="form-select" id="fin-student">
+          <option value="">Todos os alunos</option>
+          ${students.map(s => `<option value="${s.id}" ${studentFilter===s.id?'selected':''}>${s.name}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">Período</label>
+        <select class="form-select" id="fin-period">
+          <option value="todos" ${periodFilter==='todos'?'selected':''}>Todo período</option>
+          <option value="semana" ${periodFilter==='semana'?'selected':''}>Última semana</option>
+          <option value="mes" ${periodFilter==='mes'?'selected':''}>Último mês</option>
+          <option value="trimestre" ${periodFilter==='trimestre'?'selected':''}>Último trimestre</option>
+          <option value="ano" ${periodFilter==='ano'?'selected':''}>Último ano</option>
+        </select>
+      </div>
+    </div>
     <div class="tabs" style="margin:12px 0" id="fin-filters">
-      <button class="tab ${filterSel==='todos'?'active':''}" data-f="todos">Todos (${plans.length})</button>
-      <button class="tab ${filterSel==='aguardando'?'active':''}" data-f="aguardando">Aguardando (${pending.length})</button>
+      <button class="tab ${filterSel==='todos'?'active':''}" data-f="todos">Todos</button>
+      <button class="tab ${filterSel==='aguardando'?'active':''}" data-f="aguardando">Aguardando</button>
       <button class="tab ${filterSel==='abertos'?'active':''}" data-f="abertos">Em aberto</button>
       <button class="tab ${filterSel==='pagos'?'active':''}" data-f="pagos">Pagos</button>
     </div>
@@ -2342,6 +2418,14 @@ async function renderFinanceiroTab(content) {
       renderFinanceiroTab(content);
     };
   });
+  $('#fin-student').onchange = () => {
+    content.dataset.finStudent = $('#fin-student').value;
+    renderFinanceiroTab(content);
+  };
+  $('#fin-period').onchange = () => {
+    content.dataset.finPeriod = $('#fin-period').value;
+    renderFinanceiroTab(content);
+  };
 
   const list = $('#fin-list');
   if (!filtered.length) {

@@ -253,13 +253,22 @@ export async function resolveFeedback(id, coachReply = '') {
   guard('resolveFeedback', 15, 15000);
   const data = {
     resolved: true,
-    resolvedAt: firebase.firestore.FieldValue.serverTimestamp()
+    resolvedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    coachReplyRead: false
   };
   if (coachReply) {
     data.coachReply = coachReply;
     data.coachReplyAt = firebase.firestore.FieldValue.serverTimestamp();
   }
   await col('completedWorkouts').doc(id).update(data);
+}
+
+export async function markCoachReplyRead(id) {
+  guard('markReplyRead', 20, 10000);
+  await col('completedWorkouts').doc(id).update({
+    coachReplyRead: true,
+    coachReplyReadAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
 }
 
 // ---------- PLANS ----------
