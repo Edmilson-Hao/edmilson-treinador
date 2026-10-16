@@ -2,72 +2,59 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // =====================================================
-    // HELPERS
-    // =====================================================
     function isSignedIn() {
       return request.auth != null;
     }
-
     function isOwner(uid) {
       return isSignedIn() && request.auth.uid == uid;
     }
-
     function userDoc() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid));
     }
-
     function isPersonal() {
       return isSignedIn() && userDoc().data.role == 'personal';
     }
-
     function isAluno() {
       return isSignedIn() && userDoc().data.role == 'aluno';
     }
 
-    function isMyPersonal(personalId) {
-      return isAluno() && userDoc().data.personalId == personalId;
-    }
-
-    // Impede que aluno tente se promover a personal
     function validRoleChange() {
       return !('role' in request.resource.data)
           || request.resource.data.role == resource.data.role
           || (resource.data.role == 'pending' && request.resource.data.role in ['personal', 'aluno']);
     }
 
-    // =====================================================
-    // USERS
-    // =====================================================
+    // ---------- USERS ----------
     match /users/{userId} {
-      // Leitura: próprio doc OU personal lendo seus alunos OU busca de personal por código
       allow get: if isOwner(userId)
                  || (isPersonal() && resource.data.personalId == request.auth.uid)
                  || (isSignedIn() && resource.data.role == 'personal');
 
-      // List (query) só para personal listar seus alunos
-      allow list: if isPersonal();
+      // Personal lista seus alunos; qualquer logado pode listar personals (código de convite)
+      allow list: if isSignedIn() && (
+        resource.data.role == 'personal'
+        || (isPersonal() && resource.data.personalId == request.auth.uid)
+      );
 
       allow create: if isOwner(userId)
                     && request.resource.data.role in ['pending', 'personal', 'aluno'];
 
-      allow update: if isOwner(userId) && validRoleChange();
+      // Aluno/personal edita o próprio perfil; personal pode atualizar dados básicos do aluno
+      allow update: if (isOwner(userId) && validRoleChange())
+                    || (isPersonal()
+                        && resource.data.personalId == request.auth.uid
+                        && resource.data.role == 'aluno');
 
       allow delete: if false;
     }
 
-    // =====================================================
-    // EXERCISES
-    // =====================================================
+    // ---------- EXERCISES ----------
     match /exercises/{exId} {
-      // Lista padrão (__global__) legível por todos autenticados
       allow get, list: if isSignedIn() && (
         resource.data.personalId == request.auth.uid
         || resource.data.personalId == '__global__'
-        || isMyPersonal(resource.data.personalId)
       );
 
-      // Personal cria na lista própria; admin pode criar em __global__
       allow create: if isPersonal()
                     && request.resource.data.keys().hasAll(['name', 'personalId'])
                     && (
@@ -81,109 +68,65 @@ service cloud.firestore {
       );
     }
 
-    // =====================================================
-    // ROUTINES
-    // =====================================================
+    // ---------- ROUTINES ----------
     match /routines/{id} {
       allow get, list: if isSignedIn() && (
         resource.data.personalId == request.auth.uid
         || resource.data.studentId == request.auth.uid
       );
-
       allow create: if isPersonal()
-                    && request.resource.data.personalId == request.auth.uid
-                    && request.resource.data.studentId is string;
-
+                    && request.resource.data.personalId == request.auth.uid;
       allow update, delete: if isPersonal()
                             && resource.data.personalId == request.auth.uid;
     }
 
-    // =====================================================
-    // WORKOUTS
-    // =====================================================
+    // ---------- WORKOUTS ----------
     match /workouts/{id} {
       allow get, list: if isSignedIn() && (
         resource.data.personalId == request.auth.uid
         || resource.data.studentId == request.auth.uid
       );
-
       allow create: if isPersonal()
                     && request.resource.data.personalId == request.auth.uid;
-
       allow update, delete: if isPersonal()
                             && resource.data.personalId == request.auth.uid;
     }
 
-    // =====================================================
-    // COMPLETED WORKOUTS (feedback + histórico)
-    // =====================================================
+    // ---------- COMPLETED ----------
     match /completedWorkouts/{id} {
       allow get, list: if isSignedIn() && (
         resource.data.personalId == request.auth.uid
         || resource.data.studentId == request.auth.uid
       );
-
-      // Só o aluno pode criar (concluir treino)
       allow create: if isAluno()
-                    && request.resource.data.studentId == request.auth.uid
-                    && request.resource.data.personalId == userDoc().data.personalId;
-
-      // Personal resolve feedback + aluno marca mensagem como lida
+                    && request.resource.data.studentId == request.auth.uid;
       allow update: if isSignedIn() && (
-        (isPersonal()
-          && resource.data.personalId == request.auth.uid
-          && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['resolved', 'resolvedAt', 'coachReply', 'coachReplyAt', 'coachReplyRead']))
-        ||
-        (isAluno()
-          && resource.data.studentId == request.auth.uid
-          && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['coachReplyRead', 'coachReplyReadAt']))
+        (isPersonal() && resource.data.personalId == request.auth.uid)
+        || (isAluno() && resource.data.studentId == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['coachReplyRead', 'coachReplyReadAt']))
       );
-
       allow delete: if isPersonal() && resource.data.personalId == request.auth.uid;
     }
 
-    // =====================================================
-    // PLANS
-    // =====================================================
+    // ---------- PLANS ----------
     match /plans/{id} {
       allow get, list: if isSignedIn() && (
         resource.data.personalId == request.auth.uid
         || resource.data.studentId == request.auth.uid
       );
-
       allow create: if isPersonal()
                     && request.resource.data.personalId == request.auth.uid;
-
-      allow update: if isPersonal()
-                    && resource.data.personalId == request.auth.uid;
-
-      allow delete: if isPersonal()
-                    && resource.data.personalId == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (isPersonal() && resource.data.personalId == request.auth.uid)
+        || (isAluno() && resource.data.studentId == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['status', 'studentClaimedAt']))
+      );
+      allow delete: if isPersonal() && resource.data.personalId == request.auth.uid;
     }
 
-    // =====================================================
-    // ANAMNESES
-    // =====================================================
-    match /anamneses/{id} {
-      allow get, list: if isSignedIn() && (
-        resource.data.personalId == request.auth.uid
-        || resource.data.studentId == request.auth.uid
-      );
-
-      allow create: if isSignedIn() && (
-        request.resource.data.studentId == request.auth.uid
-        || request.resource.data.personalId == request.auth.uid
-      );
-
-      allow update, delete: if isPersonal()
-                            && resource.data.personalId == request.auth.uid;
-    }
-
-    // =====================================================
-    // REMINDERS
-    // =====================================================
+    // ---------- CHAT ----------
     match /chatMessages/{id} {
       allow read: if isSignedIn() && (
         resource.data.personalId == request.auth.uid
@@ -192,12 +135,7 @@ service cloud.firestore {
       allow create: if isSignedIn()
         && request.resource.data.fromUid == request.auth.uid
         && request.resource.data.text is string
-        && request.resource.data.text.size() <= 500
-        && (
-          (isPersonal() && request.resource.data.personalId == request.auth.uid)
-          || (isAluno() && request.resource.data.studentId == request.auth.uid
-              && request.resource.data.personalId == userDoc().data.personalId)
-        );
+        && request.resource.data.text.size() <= 500;
       allow update: if false;
       allow delete: if isSignedIn() && (
         resource.data.personalId == request.auth.uid
@@ -205,15 +143,28 @@ service cloud.firestore {
       );
     }
 
+    // ---------- REMINDERS ----------
     match /reminders/{id} {
-      allow get, list: if isPersonal()
-                       && resource.data.personalId == request.auth.uid;
-
-      allow create: if isPersonal()
+      allow get, list: if isSignedIn() && (
+        resource.data.personalId == request.auth.uid
+        || resource.data.studentId == request.auth.uid
+      );
+      allow create, update: if isPersonal()
                     && request.resource.data.personalId == request.auth.uid;
+      allow delete: if isPersonal() && resource.data.personalId == request.auth.uid;
+    }
 
-      allow update, delete: if isPersonal()
-                            && resource.data.personalId == request.auth.uid;
+    // ---------- ANAMNESES ----------
+    match /anamneses/{id} {
+      allow get, list: if isSignedIn() && (
+        resource.data.personalId == request.auth.uid
+        || resource.data.studentId == request.auth.uid
+      );
+      allow create, update: if isSignedIn() && (
+        request.resource.data.studentId == request.auth.uid
+        || request.resource.data.personalId == request.auth.uid
+      );
+      allow delete: if isPersonal() && resource.data.personalId == request.auth.uid;
     }
   }
 }

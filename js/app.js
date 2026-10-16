@@ -4,7 +4,7 @@
 
 import { firebaseConfig } from './firebase-config.js';
 import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEmail, logout, createStudentAccount } from './shared/auth.js';
-import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, getGlobalExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, markCoachReplyRead, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan } from './shared/db.js';
+import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, getGlobalExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, updateRoutine, archiveRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, deleteWorkout, cloneRoutine, cleanupExpiredCoachReplies, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, markCoachReplyRead, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan, sendChatMessage, getChatMessages, upsertReminder, getRemindersForStudent, getRemindersForPersonal } from './shared/db.js';
 import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, mediaHtml, isGifUrl, confirmDialog, generateInviteCode, compressImageToBase64 } from './shared/utils.js';
 
 // Captura erros de rate-limit e mostra toast amigável
@@ -16,6 +16,11 @@ window.addEventListener('unhandledrejection', (e) => {
 });
 
 // Estado global
+// Tema claro/escuro
+try {
+  if (localStorage.getItem('theme') === 'light') document.documentElement.dataset.theme = 'light';
+} catch {}
+
 const state = {
   user: null,
   profile: null,
@@ -444,6 +449,18 @@ async function renderPersonalTab(tab, students, stats) {
           <div class="icon">🔑</div>
           <div class="label">Chave PIX</div>
         </div>
+        <div class="action-item" id="act-export">
+          <div class="icon">📦</div>
+          <div class="label">Backup</div>
+        </div>
+        <div class="action-item" id="act-cleanup">
+          <div class="icon">🧹</div>
+          <div class="label">Limpeza</div>
+        </div>
+        <div class="action-item" id="act-theme">
+          <div class="icon">🌓</div>
+          <div class="label">Tema</div>
+        </div>
       </div>
     `;
 
@@ -481,6 +498,24 @@ async function renderPersonalTab(tab, students, stats) {
     $('#act-students').onclick = () => goTab('alunos');
     $('#act-financeiro')?.addEventListener('click', () => goTab('financeiro'));
     $('#act-pix')?.addEventListener('click', () => showPixKeyModal());
+    $('#act-export')?.addEventListener('click', () => exportPersonalBackup());
+    $('#act-cleanup')?.addEventListener('click', async () => {
+      toast('Limpando dados expirados...', 'success');
+      try {
+        const n = await cleanupExpiredCoachReplies(state.user.uid);
+        // limpa localStorage de sessões antigas
+        Object.keys(localStorage).forEach(k => {
+          if (k.startsWith('workout_session_') || k.startsWith('workout_draft_')) {
+            try {
+              const s = JSON.parse(localStorage.getItem(k) || '{}');
+              if (s.startedAt && Date.now() - s.startedAt > 7 * 86400000) localStorage.removeItem(k);
+            } catch { localStorage.removeItem(k); }
+          }
+        });
+        toast(n ? `${n} resposta(s) antigas removidas` : 'Limpeza concluída', 'success');
+      } catch (e) { toast(e.message || 'Erro na limpeza', 'error'); }
+    });
+    $('#act-theme')?.addEventListener('click', () => toggleTheme());
   }
 
   if (tab === 'alunos') {
@@ -795,6 +830,7 @@ async function showStudentDetail(student) {
     <header class="app-header">
       <button class="icon-btn" id="btn-back">←</button>
       <div class="title" style="flex:1;text-align:center">${student.name}</div>
+      <button class="icon-btn" id="btn-chat" title="Chat">💬</button>
       <button class="icon-btn" id="btn-student-profile" title="Perfil">👤</button>
     </header>
     <div class="tabs">
@@ -808,6 +844,7 @@ async function showStudentDetail(student) {
   $('#btn-back').onclick = () => showPersonalHome();
   $('#btn-home')?.addEventListener('click', () => showPersonalHome());
   $('#btn-student-profile')?.addEventListener('click', () => showUserProfile(student));
+  $('#btn-chat')?.addEventListener('click', () => showChat(student));
 
   $$('.tab').forEach(tab => {
     tab.onclick = () => {
@@ -1036,23 +1073,42 @@ function showCreatePlan(student) {
 // ---------- DETALHE DA ROTINA + TREINOS ----------
 async function showRoutineDetail(routine, student) {
   state.currentRoutine = routine;
-  const workouts = await getWorkoutsOfRoutine(routine.id);
+  const workouts = await getWorkoutsOfRoutine(routine.id, { personalId: state.user.uid });
 
   const app = $('#app');
   app.innerHTML = `
     <header class="app-header">
       <button class="icon-btn" id="btn-back">←</button>
       <div class="title" style="flex:1;text-align:center">${routine.name}</div>
-      <div style="width:40px"></div>
+      <button class="icon-btn" id="btn-edit-routine" title="Editar">✎</button>
     </header>
     <div class="page">
-      <button class="btn btn-primary btn-block" id="btn-add-workout" style="margin-bottom:16px">+ Adicionar treino</button>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">
+        <button class="btn btn-primary" id="btn-add-workout" style="flex:1">+ Treino</button>
+        <button class="btn btn-outline" id="btn-clone-routine">Clonar</button>
+        <button class="btn btn-outline" id="btn-archive-routine" style="color:var(--danger);border-color:var(--danger)">Arquivar</button>
+      </div>
       <div id="workouts-list"></div>
     </div>
   `;
 
   $('#btn-back').onclick = () => showStudentDetail(student);
   $('#btn-add-workout').onclick = () => showCreateWorkout(routine, student);
+  $('#btn-edit-routine').onclick = () => showEditRoutineModal(routine, student);
+  $('#btn-clone-routine').onclick = async () => {
+    if (!confirm('Clonar esta rotina (com todos os treinos) para o mesmo aluno?')) return;
+    try {
+      await cloneRoutine(routine.id, student.id, state.user.uid);
+      toast('Rotina clonada', 'success');
+      showStudentDetail(student);
+    } catch (e) { toast(e.message || 'Erro ao clonar', 'error'); }
+  };
+  $('#btn-archive-routine').onclick = async () => {
+    if (!confirm('Arquivar esta rotina? O aluno deixa de vê-la.')) return;
+    await archiveRoutine(routine.id);
+    toast('Rotina arquivada', 'success');
+    showStudentDetail(student);
+  };
 
   const list = $('#workouts-list');
   if (workouts.length === 0) {
@@ -1060,11 +1116,37 @@ async function showRoutineDetail(routine, student) {
     return;
   }
   workouts.forEach(w => {
+    const start = w.startDate ? formatDate(w.startDate) : '—';
+    const end = w.endDate ? formatDate(w.endDate) : '∞';
     list.appendChild(el('div', { class: 'card selectable', onClick: () => showWorkoutEditor(w, routine, student) }, [
       el('div', { style: 'font-weight:600', text: w.name }),
-      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${(w.exercises||[]).length} exercícios` })
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${(w.exercises||[]).length} exercícios · ${start} → ${end}` })
     ]));
   });
+}
+
+function showEditRoutineModal(routine, student) {
+  const html = `
+    <div class="form-group">
+      <label class="form-label">Nome da rotina</label>
+      <input type="text" class="form-input" id="er-name" value="${routine.name || ''}">
+    </div>
+    <button class="btn btn-primary btn-block" id="btn-save-er">Salvar</button>
+  `;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `<div class="modal"><div class="modal-header"><div class="modal-title">Editar rotina</div><button class="icon-btn" id="close-modal">✕</button></div>${html}</div>`;
+  document.body.appendChild(overlay);
+  $('#close-modal').onclick = () => overlay.remove();
+  $('#btn-save-er').onclick = async () => {
+    const name = $('#er-name').value.trim();
+    if (!name) return toast('Nome obrigatório', 'error');
+    await updateRoutine(routine.id, { name });
+    routine.name = name;
+    toast('Rotina atualizada', 'success');
+    overlay.remove();
+    showRoutineDetail(routine, student);
+  };
 }
 
 function showCreateWorkout(routine, student) {
@@ -1117,20 +1199,63 @@ async function showWorkoutEditor(workout, routine, student) {
   const allExercises = await getExercises(state.user.uid);
 
   const app = $('#app');
+  const startStr = workout.startDate?.toDate ? workout.startDate.toDate().toISOString().slice(0,10) : '';
+  const endStr = workout.endDate?.toDate ? workout.endDate.toDate().toISOString().slice(0,10) : '';
   app.innerHTML = `
     <header class="app-header">
       <button class="icon-btn" id="btn-back">←</button>
       <div class="title" style="flex:1;text-align:center">${workout.name}</div>
-      <div style="width:40px"></div>
+      <button class="icon-btn" id="btn-edit-w" title="Editar">✎</button>
     </header>
     <div class="page">
+      <div class="card note" style="font-size:0.8rem;margin-bottom:12px">
+        Vigência: ${startStr || '—'} → ${endStr || 'sem fim'}
+      </div>
       <button class="btn btn-primary btn-block" id="btn-add-ex" style="margin-bottom:16px">+ Adicionar exercício</button>
       <div id="ex-in-workout"></div>
+      <button class="btn btn-outline btn-block" id="btn-del-w" style="margin-top:20px;color:var(--danger);border-color:var(--danger)">Excluir treino</button>
     </div>
   `;
 
   $('#btn-back').onclick = () => showRoutineDetail(routine, student);
   $('#btn-add-ex').onclick = () => showPickExercise(allExercises, workout, routine, student);
+  $('#btn-del-w').onclick = async () => {
+    if (!confirm('Excluir este treino permanentemente?')) return;
+    await deleteWorkout(workout.id);
+    toast('Treino excluído', 'success');
+    showRoutineDetail(routine, student);
+  };
+  $('#btn-edit-w').onclick = () => {
+    const html = `
+      <div class="form-group"><label class="form-label">Nome</label>
+        <input type="text" class="form-input" id="ew-name" value="${workout.name || ''}"></div>
+      <div class="form-group"><label class="form-label">Início</label>
+        <input type="date" class="form-input" id="ew-start" value="${startStr}"></div>
+      <div class="form-group"><label class="form-label">Fim</label>
+        <input type="date" class="form-input" id="ew-end" value="${endStr}"></div>
+      <button class="btn btn-primary btn-block" id="btn-save-ew">Salvar</button>`;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay open';
+    overlay.innerHTML = `<div class="modal"><div class="modal-header"><div class="modal-title">Editar treino</div><button class="icon-btn" id="close-modal">✕</button></div>${html}</div>`;
+    document.body.appendChild(overlay);
+    $('#close-modal').onclick = () => overlay.remove();
+    $('#btn-save-ew').onclick = async () => {
+      const name = $('#ew-name').value.trim();
+      if (!name) return toast('Nome obrigatório', 'error');
+      const sv = $('#ew-start').value;
+      const ev = $('#ew-end').value;
+      const data = {
+        name,
+        startDate: sv ? firebase.firestore.Timestamp.fromDate(new Date(sv+'T00:00:00')) : null,
+        endDate: ev ? firebase.firestore.Timestamp.fromDate(new Date(ev+'T23:59:59')) : null
+      };
+      await updateWorkout(workout.id, data);
+      Object.assign(workout, data);
+      toast('Treino atualizado', 'success');
+      overlay.remove();
+      showWorkoutEditor(workout, routine, student);
+    };
+  };
 
   renderWorkoutExercises(workout, routine, student);
 }
@@ -1596,7 +1721,7 @@ async function fillStudentRoutines(routines) {
   }
   rList.innerHTML = '';
   for (const r of routines) {
-    const allW = await getWorkoutsOfRoutine(r.id);
+    const allW = await getWorkoutsOfRoutine(r.id, { studentId: state.user.uid });
     const workouts = allW.filter(isWorkoutActive);
     if (!workouts.length) continue;
     const card = el('div', { class: 'card' }, [
@@ -1836,6 +1961,7 @@ function renderStudentHistory(main, completed, onOpen) {
 
     main.innerHTML = `
       <div class="page-title">Histórico</div>
+      <button class="btn btn-sm btn-outline" id="btn-prog" style="margin-bottom:10px">📈 Progressão por exercício</button>
       <div class="tabs" id="period-tabs" style="margin-bottom:12px">
         ${['semana','mes','semestre','ano'].map(p =>
           `<button class="tab ${period===p?'active':''}" data-p="${p}">${p[0].toUpperCase()+p.slice(1)}</button>`
@@ -1870,6 +1996,7 @@ function renderStudentHistory(main, completed, onOpen) {
     });
     $('#filter-workout').onchange = () => { workoutFilter = $('#filter-workout').value; apply(); };
     $('#filter-muscle').onchange = () => { muscleFilter = $('#filter-muscle').value; apply(); };
+    $('#btn-prog')?.addEventListener('click', () => showExerciseProgression(completed));
 
     renderTonnageChart($('#chart-box'), chrono.map(x => x.c));
 
@@ -2596,6 +2723,189 @@ async function showCompletedReport(completed, prevTonnage) {
       el('div', { html: setsHtml })
     ]));
   });
+}
+
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  if (next === 'light') document.documentElement.dataset.theme = 'light';
+  else delete document.documentElement.dataset.theme;
+  localStorage.setItem('theme', next === 'light' ? 'light' : 'dark');
+  toast(next === 'light' ? 'Tema claro' : 'Tema escuro', 'success');
+}
+
+async function exportPersonalBackup() {
+  try {
+    toast('Gerando backup...', 'success');
+    const students = await getStudentsOfPersonal(state.user.uid);
+    const exercises = await getExercises(state.user.uid);
+    const plans = await getPlansOfPersonal(state.user.uid);
+    const data = {
+      exportedAt: new Date().toISOString(),
+      personal: { uid: state.user.uid, name: state.profile.name, email: state.profile.email },
+      students,
+      exercises,
+      plans
+    };
+    // rotinas por aluno
+    data.routines = {};
+    data.workouts = {};
+    for (const s of students) {
+      const rts = await getRoutinesOfStudent(s.id);
+      data.routines[s.id] = rts;
+      for (const r of rts) {
+        data.workouts[r.id] = await getWorkoutsOfRoutine(r.id, { personalId: state.user.uid });
+      }
+    }
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `edmilson-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('Backup baixado', 'success');
+  } catch (e) {
+    console.error(e);
+    toast('Erro ao exportar', 'error');
+  }
+}
+
+/** Progressão de carga por exercício (kg médio por treino) */
+function buildExerciseProgression(completed, exerciseName) {
+  const points = [];
+  const chrono = [...completed].reverse();
+  chrono.forEach(c => {
+    const ex = (c.exercisesPerformed || []).find(e => e.name === exerciseName);
+    if (!ex || !ex.sets?.length) return;
+    const loads = ex.sets.map(s => Number(s.weight) || 0).filter(w => w > 0);
+    if (!loads.length) return;
+    const avg = loads.reduce((a, b) => a + b, 0) / loads.length;
+    const max = Math.max(...loads);
+    points.push({
+      date: c.finishedAt,
+      avg: Math.round(avg * 10) / 10,
+      max,
+      workoutName: c.workoutName
+    });
+  });
+  return points;
+}
+
+function showExerciseProgression(completed) {
+  const names = [...new Set(completed.flatMap(c => (c.exercisesPerformed || []).map(e => e.name)).filter(Boolean))].sort();
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">Progressão por exercício</div>
+      <div style="width:40px"></div>
+    </header>
+    <div class="page">
+      <div class="form-group">
+        <label class="form-label">Exercício</label>
+        <select class="form-select" id="prog-ex">
+          <option value="">Selecione...</option>
+          ${names.map(n => `<option value="${n}">${n}</option>`).join('')}
+        </select>
+      </div>
+      <div id="prog-chart" class="card"></div>
+      <div id="prog-list"></div>
+    </div>
+  `;
+  $('#btn-back').onclick = () => showStudentHome();
+  $('#prog-ex').onchange = () => {
+    const name = $('#prog-ex').value;
+    const pts = buildExerciseProgression(completed, name);
+    const box = $('#prog-chart');
+    const list = $('#prog-list');
+    if (!pts.length) {
+      box.innerHTML = '<p class="text-muted">Sem dados de carga para este exercício</p>';
+      list.innerHTML = '';
+      return;
+    }
+    // mini chart de carga máxima
+    const vals = pts.map(p => p.max);
+    const w = 320, h = 100, pad = 20;
+    const maxV = Math.max(...vals, 1);
+    const line = vals.map((v, i) => {
+      const x = pad + (i / Math.max(vals.length - 1, 1)) * (w - pad * 2);
+      const y = h - pad - (v / maxV) * (h - pad * 2);
+      return `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    box.innerHTML = `
+      <div style="font-size:0.8rem;color:var(--muted);margin-bottom:6px">Carga máxima (kg) ao longo do tempo</div>
+      <svg viewBox="0 0 ${w} ${h}" width="100%" height="100">
+        <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
+      </svg>
+      <div style="display:flex;justify-content:space-between;font-size:0.8rem">
+        <span>Início: ${vals[0]} kg</span>
+        <span style="color:${vals[vals.length-1] > vals[0] ? 'var(--success)' : 'var(--text)'}">Agora: ${vals[vals.length-1]} kg</span>
+      </div>`;
+    list.innerHTML = '';
+    [...pts].reverse().forEach(p => {
+      list.appendChild(el('div', { class: 'card' }, [
+        el('div', { style: 'font-weight:600', text: `${p.max} kg (média ${p.avg})` }),
+        el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${formatDateTime(p.date)} · ${p.workoutName || ''}` })
+      ]));
+    });
+  };
+}
+
+async function showChat(student) {
+  const isPersonal = state.profile.role === 'personal';
+  const personalId = isPersonal ? state.user.uid : state.profile.personalId;
+  const studentId = isPersonal ? student.id : state.user.uid;
+  const peerName = isPersonal ? student.name : 'Personal';
+
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">Chat · ${peerName}</div>
+      <div style="width:40px"></div>
+    </header>
+    <div class="page" style="padding-bottom:80px;display:flex;flex-direction:column">
+      <div class="alert-danger" style="font-size:0.8rem;margin-bottom:12px">
+        Mensagens são apagadas automaticamente após <strong>2 dias</strong>. Não use para dados sensíveis permanentes.
+      </div>
+      <div id="chat-list" style="flex:1;overflow-y:auto;max-height:55vh;margin-bottom:12px"></div>
+      <div style="display:flex;gap:8px">
+        <input type="text" class="form-input" id="chat-input" placeholder="Mensagem..." maxlength="500" style="flex:1">
+        <button class="btn btn-primary" id="chat-send">Enviar</button>
+      </div>
+    </div>
+  `;
+  $('#btn-back').onclick = () => isPersonal ? showStudentDetail(student) : showStudentHome();
+
+  const render = async () => {
+    const msgs = await getChatMessages(personalId, studentId);
+    const list = $('#chat-list');
+    list.innerHTML = '';
+    if (!msgs.length) {
+      list.innerHTML = `<p class="text-muted" style="text-align:center">Nenhuma mensagem</p>`;
+      return;
+    }
+    msgs.forEach(m => {
+      const mine = m.fromUid === state.user.uid;
+      list.appendChild(el('div', {
+        style: `margin-bottom:8px;padding:10px 12px;border-radius:12px;max-width:85%;${mine ? 'margin-left:auto;background:var(--accent);color:#0f172a' : 'background:var(--elevated)'}`
+      }, [
+        el('div', { style: 'font-size:0.9rem', text: m.text }),
+        el('div', { style: `font-size:0.7rem;margin-top:4px;opacity:0.7`, text: formatDateTime(m.createdAt) })
+      ]));
+    });
+    list.scrollTop = list.scrollHeight;
+  };
+  await render();
+
+  const send = async () => {
+    const textMsg = $('#chat-input').value.trim();
+    if (!textMsg) return;
+    await sendChatMessage({ personalId, studentId, fromUid: state.user.uid, text: textMsg });
+    $('#chat-input').value = '';
+    await render();
+  };
+  $('#chat-send').onclick = send;
+  bindEnter('#chat-input', send);
 }
 
 // ---------- START ----------
