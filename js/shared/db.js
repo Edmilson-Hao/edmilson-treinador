@@ -225,6 +225,55 @@ export async function deleteWorkout(id) {
   await col('workouts').doc(id).delete();
 }
 
+// ---------- WORKOUT TEMPLATES (biblioteca) ----------
+export async function getWorkoutTemplates(personalId) {
+  guard('listTemplates', 8, 15000);
+  const snap = await col('workoutTemplates')
+    .where('personalId', '==', personalId)
+    .limit(50)
+    .get();
+  return sortBy(snap.docs.map(d => ({ id: d.id, ...d.data() })), 'name');
+}
+
+export async function createWorkoutTemplate(data) {
+  guard('createTemplate', 8, 20000);
+  const ref = await col('workoutTemplates').add({
+    ...data,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+  return ref.id;
+}
+
+export async function updateWorkoutTemplate(id, data) {
+  guard('updateTemplate', 10, 15000);
+  await col('workoutTemplates').doc(id).update(data);
+}
+
+export async function deleteWorkoutTemplate(id) {
+  guard('deleteTemplate', 8, 20000);
+  await col('workoutTemplates').doc(id).delete();
+}
+
+/** Copia treino (exercícios) para rotina de outro aluno */
+export async function copyWorkoutToStudent(workout, targetStudentId, targetRoutineId, personalId, { cut = false, sourceWorkoutId = null } = {}) {
+  guard('copyWorkout', 5, 30000);
+  const id = await createWorkout({
+    routineId: targetRoutineId,
+    personalId,
+    studentId: targetStudentId,
+    name: workout.name,
+    order: workout.order || 0,
+    exercises: workout.exercises || [],
+    startDate: workout.startDate || null,
+    endDate: workout.endDate || null
+  });
+  if (cut && sourceWorkoutId) {
+    await deleteWorkout(sourceWorkoutId);
+  }
+  return id;
+}
+
+
 /** Clona rotina + treinos para o mesmo aluno ou outro */
 export async function cloneRoutine(routineId, targetStudentId, personalId) {
   guard('cloneRoutine', 3, 60000);

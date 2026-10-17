@@ -133,6 +133,15 @@ service cloud.firestore {
       allow delete: if isPersonal() && resource.data.personalId == request.auth.uid;
     }
 
+    // ---------- WORKOUT TEMPLATES ----------
+    match /workoutTemplates/{id} {
+      allow get, list: if isSignedIn() && resource.data.personalId == request.auth.uid;
+      allow create: if isPersonal()
+                    && request.resource.data.personalId == request.auth.uid;
+      allow update, delete: if isPersonal()
+                            && resource.data.personalId == request.auth.uid;
+    }
+
     // ---------- CHAT ----------
     match /chatMessages/{id} {
       allow read: if isSignedIn() && (

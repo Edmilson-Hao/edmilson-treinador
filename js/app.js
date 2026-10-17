@@ -4,8 +4,8 @@
 
 import { firebaseConfig, initAppCheckIfConfigured } from './firebase-config.js';
 import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEmail, logout, createStudentAccount, completeGoogleRedirectIfAny } from './shared/auth.js';
-import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, getGlobalExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, updateRoutine, archiveRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, deleteWorkout, cloneRoutine, cleanupExpiredCoachReplies, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, markCoachReplyRead, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan, sendChatMessage, getChatMessages, upsertReminder, getRemindersForStudent, getRemindersForPersonal } from './shared/db.js';
-import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, mediaHtml, isGifUrl, confirmDialog, generateInviteCode, compressImageToBase64 } from './shared/utils.js';
+import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, getGlobalExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, updateRoutine, archiveRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, deleteWorkout, cloneRoutine, getWorkoutTemplates, createWorkoutTemplate, updateWorkoutTemplate, deleteWorkoutTemplate, copyWorkoutToStudent, cleanupExpiredCoachReplies, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, markCoachReplyRead, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan, sendChatMessage, getChatMessages, upsertReminder, getRemindersForStudent, getRemindersForPersonal } from './shared/db.js';
+import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, mediaHtml, isGifUrl, confirmDialog, promptDialog, generateInviteCode, compressImageToBase64 } from './shared/utils.js';
 
 // Captura erros de rate-limit e mostra toast amigável
 window.addEventListener('unhandledrejection', (e) => {
@@ -449,8 +449,16 @@ async function renderPersonalTab(tab, students, stats) {
           <div class="label">Biblioteca</div>
         </div>
         <div class="action-item" id="act-feedbacks">
-          <div class="icon">💬</div>
+          <div class="icon">📝</div>
           <div class="label" id="act-feedbacks-label">Feedbacks</div>
+        </div>
+        <div class="action-item" id="act-chat">
+          <div class="icon">💬</div>
+          <div class="label">Mensagens</div>
+        </div>
+        <div class="action-item" id="act-templates">
+          <div class="icon">📚</div>
+          <div class="label">Modelos treino</div>
         </div>
         <div class="action-item" id="act-financeiro">
           <div class="icon">💰</div>
@@ -510,6 +518,8 @@ async function renderPersonalTab(tab, students, stats) {
     $('#act-add-student').onclick = () => showAddStudentModal();
     $('#act-exercises').onclick = () => goTab('exercicios');
     $('#act-feedbacks').onclick = () => goTab('feedbacks');
+    $('#act-chat')?.addEventListener('click', () => showPersonalChatHub(students));
+    $('#act-templates')?.addEventListener('click', () => showWorkoutLibrary());
     $('#act-students').onclick = () => goTab('alunos');
     $('#act-financeiro')?.addEventListener('click', () => goTab('financeiro'));
     $('#act-pix')?.addEventListener('click', () => showPixKeyModal());
@@ -700,7 +710,7 @@ async function renderExercisesTab(content) {
             text: 'Excluir',
             style: 'color:var(--danger);border-color:var(--danger)',
             onClick: async () => {
-              if (!confirm(`Excluir "${ex.name}"?`)) return;
+              if (!(await confirmDialog(`Excluir "${ex.name}"?`))) return;
               try {
                 await deleteExercise(ex.id);
                 toast('Exercício excluído', 'success');
@@ -1118,7 +1128,7 @@ async function showRoutineDetail(routine, student) {
   $('#btn-add-workout').onclick = () => showCreateWorkout(routine, student);
   $('#btn-edit-routine').onclick = () => showEditRoutineModal(routine, student);
   $('#btn-clone-routine').onclick = async () => {
-    if (!confirm('Clonar esta rotina (com todos os treinos) para o mesmo aluno?')) return;
+    if (!(await confirmDialog('Clonar esta rotina (com todos os treinos) para o mesmo aluno?'))) return;
     try {
       await cloneRoutine(routine.id, student.id, state.user.uid);
       toast('Rotina clonada', 'success');
@@ -1126,7 +1136,7 @@ async function showRoutineDetail(routine, student) {
     } catch (e) { toast(e.message || 'Erro ao clonar', 'error'); }
   };
   $('#btn-archive-routine').onclick = async () => {
-    if (!confirm('Arquivar esta rotina? O aluno deixa de vê-la.')) return;
+    if (!(await confirmDialog('Arquivar esta rotina? O aluno deixa de vê-la.'))) return;
     await archiveRoutine(routine.id);
     toast('Rotina arquivada', 'success');
     showStudentDetail(student);
@@ -1140,10 +1150,41 @@ async function showRoutineDetail(routine, student) {
   workouts.forEach(w => {
     const start = w.startDate ? formatDate(w.startDate) : '—';
     const end = w.endDate ? formatDate(w.endDate) : '∞';
-    list.appendChild(el('div', { class: 'card selectable', onClick: () => showWorkoutEditor(w, routine, student) }, [
-      el('div', { style: 'font-weight:600', text: w.name }),
-      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${(w.exercises||[]).length} exercícios · ${start} → ${end}` })
-    ]));
+    const card = el('div', { class: 'card' }, [
+      el('div', {
+        style: 'cursor:pointer',
+        onClick: () => showWorkoutEditor(w, routine, student)
+      }, [
+        el('div', { style: 'font-weight:600', text: w.name }),
+        el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${(w.exercises||[]).length} exercícios · ${start} → ${end}` })
+      ]),
+      el('div', { style: 'display:flex;gap:8px;margin-top:10px' }, [
+        el('button', {
+          class: 'btn btn-sm btn-outline',
+          text: 'Copiar / Cortar',
+          onClick: (e) => {
+            e.stopPropagation();
+            copyWorkoutBetweenStudents(w, student, routine);
+          }
+        }),
+        el('button', {
+          class: 'btn btn-sm btn-outline',
+          text: 'Salvar como modelo',
+          onClick: async (e) => {
+            e.stopPropagation();
+            const n = await promptDialog('Salvar como modelo', 'Nome', w.name);
+            if (n === null || !n.trim()) return;
+            await createWorkoutTemplate({
+              personalId: state.user.uid,
+              name: n.trim(),
+              exercises: JSON.parse(JSON.stringify(w.exercises || []))
+            });
+            toast('Modelo salvo na biblioteca', 'success');
+          }
+        })
+      ])
+    ]);
+    list.appendChild(card);
   });
 }
 
@@ -1242,7 +1283,7 @@ async function showWorkoutEditor(workout, routine, student) {
   $('#btn-back').onclick = () => showRoutineDetail(routine, student);
   $('#btn-add-ex').onclick = () => showPickExercise(allExercises, workout, routine, student);
   $('#btn-del-w').onclick = async () => {
-    if (!confirm('Excluir este treino permanentemente?')) return;
+    if (!(await confirmDialog('Excluir este treino permanentemente?'))) return;
     await deleteWorkout(workout.id);
     toast('Treino excluído', 'success');
     showRoutineDetail(routine, student);
@@ -1564,10 +1605,18 @@ function showEditSets(ex, idx, workout, routine, student) {
       delete workout.exercises[idx].combinedName;
       delete workout.exercises[idx].combinedMedia;
     }
-    await updateWorkout(workout.id, { exercises: workout.exercises });
-    toast('Séries e técnica salvas', 'success');
-    overlay.remove();
-    showWorkoutEditor(workout, routine, student);
+    // Modelo de biblioteca (template) vs treino real
+    if (routine?.id === 'tpl') {
+      await updateWorkoutTemplate(workout.id, { exercises: workout.exercises });
+      toast('Séries salvas no modelo', 'success');
+      overlay.remove();
+      showTemplateEditor(workout);
+    } else {
+      await updateWorkout(workout.id, { exercises: workout.exercises });
+      toast('Séries e técnica salvas', 'success');
+      overlay.remove();
+      showWorkoutEditor(workout, routine, student);
+    }
   };
 }
 
@@ -1724,6 +1773,7 @@ async function showStudentHome() {
     if (state.profile.personalId) {
       const personal = await getUser(state.profile.personalId);
       if (personal?.pixKey) state.profile.personalPixKey = personal.pixKey;
+      if (personal?.name) state.profile.personalName = personal.name;
     }
   } catch (e) {
     console.error(e);
@@ -1762,7 +1812,7 @@ async function showStudentHome() {
         <span>📊</span><span>Histórico</span>
       </button>
       <button class="nav-item" data-nav="mensagens" id="nav-msgs">
-        <span>💬</span><span>Msgs</span>
+        <span>💬</span><span>Chat</span>
       </button>
       <button class="nav-item" data-nav="perfil">
         <span>👤</span><span>Perfil</span>
@@ -1811,7 +1861,7 @@ async function showStudentHome() {
         </div>` : ''}
         <div class="stat-row">
           <div class="stat-card"><div class="stat-value">${routines.length}</div><div class="stat-label">Rotinas</div></div>
-          <div class="stat-card"><div class="stat-value">${completed.length}</div><div class="stat-label">Últimos treinos</div></div>
+          <div class="stat-card"><div class="stat-value">${completed.length}</div><div class="stat-label">Rotinas concluídas</div></div>
           <div class="stat-card"><div class="stat-value">${openPlans.length}</div><div class="stat-label">Faturas abertas</div></div>
         </div>
         <div class="page-title">Acesso rápido</div>
@@ -1823,19 +1873,21 @@ async function showStudentHome() {
           </div>
           <div class="action-item" id="go-hist"><div class="icon">📊</div><div class="label">Histórico</div></div>
           <div class="action-item" id="go-profile"><div class="icon">👤</div><div class="label">Meu perfil</div></div>
-          <div class="action-item" id="go-msgs" style="${unreadCoachReplies(completed).length ? 'border:1.5px solid var(--accent)' : ''}">
+          <div class="action-item" id="go-msgs">
             <div class="icon">💬</div>
-            <div class="label">${unreadCoachReplies(completed).length ? `Msgs (${unreadCoachReplies(completed).length})` : 'Mensagens'}</div>
+            <div class="label">Chat</div>
           </div>
         </div>
-        <div class="page-title" style="margin-top:8px">Últimos treinos</div>
+        <div class="page-title" style="margin-top:8px">Rotinas concluídas</div>
         <div id="home-recent"></div>
       `;
       $('#go-treinos').onclick = () => renderNav('treinos');
       $('#go-fin').onclick = () => renderNav('financeiro');
       $('#go-hist').onclick = () => renderNav('historico');
       $('#go-profile')?.addEventListener('click', () => showUserProfile());
-      $('#go-msgs')?.addEventListener('click', () => renderNav('mensagens'));
+      $('#go-msgs')?.addEventListener('click', () => {
+        showChat({ id: state.user.uid, name: state.profile.personalName || 'Personal' });
+      });
       $('#student-photo')?.addEventListener('change', async (e) => {
         const f = e.target.files?.[0];
         if (!f) return;
@@ -1861,7 +1913,12 @@ async function showStudentHome() {
     } else if (nav === 'historico') {
       renderStudentHistory(main, completed);
     } else if (nav === 'mensagens') {
-      renderStudentMessages(main, completed);
+      // Chat com o personal (não feedbacks)
+      const peer = {
+        id: state.user.uid,
+        name: state.profile.personalName || 'Personal'
+      };
+      showChat(peer);
     } else if (nav === 'perfil') {
       showUserProfile();
     }
@@ -2122,7 +2179,10 @@ function renderStudentHistory(main, completed, onOpen) {
 
     main.innerHTML = `
       <div class="page-title">Histórico</div>
-      <button class="btn btn-sm btn-outline" id="btn-prog" style="margin-bottom:10px">📈 Progressão por exercício</button>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <button class="btn btn-sm btn-outline" id="btn-prog">📈 Progressão por exercício</button>
+        <button class="btn btn-sm btn-outline" id="btn-fb-replies">💬 Respostas do personal</button>
+      </div>
       <div class="tabs" id="period-tabs" style="margin-bottom:12px">
         ${['semana','mes','semestre','ano'].map(p =>
           `<button class="tab ${period===p?'active':''}" data-p="${p}">${p[0].toUpperCase()+p.slice(1)}</button>`
@@ -2158,6 +2218,7 @@ function renderStudentHistory(main, completed, onOpen) {
     $('#filter-workout').onchange = () => { workoutFilter = $('#filter-workout').value; apply(); };
     $('#filter-muscle').onchange = () => { muscleFilter = $('#filter-muscle').value; apply(); };
     $('#btn-prog')?.addEventListener('click', () => showExerciseProgression(completed));
+    $('#btn-fb-replies')?.addEventListener('click', () => renderStudentMessages(main, completed));
 
     renderTonnageChart($('#chart-box'), chrono.map(x => x.c));
 
@@ -2613,7 +2674,7 @@ async function showStudentWorkout(workout, routine) {
     });
 
     $('#btn-cancel')?.addEventListener('click', () => {
-      if (!confirm('Cancelar este treino? O progresso de hoje será apagado.')) return;
+      if (!(await confirmDialog('Cancelar este treino? O progresso de hoje será apagado.'))) return;
       stopTimers();
       clearSession();
       toast('Treino cancelado', 'success');
@@ -3046,6 +3107,371 @@ function showExerciseProgression(completed) {
       ]));
     });
   };
+}
+
+
+async function showPersonalChatHub(studentsList = null) {
+  let students = studentsList;
+  if (!students) {
+    try { students = await getStudentsOfPersonal(state.user.uid); } catch { students = []; }
+  }
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">Mensagens</div>
+      <div style="width:40px"></div>
+    </header>
+    <div class="page">
+      <p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">Selecione um aluno para conversar. Mensagens somem em 2 dias.</p>
+      <div class="form-group" style="margin-bottom:12px">
+        <input type="search" class="form-input" id="chat-search" placeholder="🔍 Buscar aluno..." autocomplete="off">
+      </div>
+      <div id="chat-student-list"></div>
+    </div>
+  `;
+  $('#btn-back').onclick = () => showPersonalHome();
+  const list = $('#chat-student-list');
+  const render = (items) => {
+    list.innerHTML = '';
+    if (!items.length) {
+      list.innerHTML = `<div class="empty"><p>Nenhum aluno</p></div>`;
+      return;
+    }
+    items.forEach(s => {
+      list.appendChild(el('div', {
+        class: 'student-card',
+        onClick: () => showChat(s)
+      }, [
+        s.photoURL ? el('img', { class: 'avatar', src: s.photoURL, style: 'object-fit:cover' }) : el('div', { class: 'avatar', text: initials(s.name) }),
+        el('div', { class: 'student-info' }, [
+          el('div', { class: 'student-name', text: s.name }),
+          el('div', { class: 'student-meta', text: s.phone || s.email || '' })
+        ]),
+        el('div', { html: '💬', style: 'font-size:1.2rem' })
+      ]));
+    });
+  };
+  render(students);
+  $('#chat-search').oninput = () => {
+    const q = ($('#chat-search').value || '').trim().toLowerCase();
+    if (!q) return render(students);
+    render(students.filter(s =>
+      (s.name || '').toLowerCase().includes(q) ||
+      (s.email || '').toLowerCase().includes(q) ||
+      (s.phone || '').toLowerCase().includes(q)
+    ));
+  };
+}
+
+async function showWorkoutLibrary() {
+  const templates = await getWorkoutTemplates(state.user.uid);
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">Modelos de treino</div>
+      <div style="width:40px"></div>
+    </header>
+    <div class="page">
+      <p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">Crie treinos genéricos e atribua depois a qualquer aluno.</p>
+      <button class="btn btn-primary btn-block" id="btn-new-tpl" style="margin-bottom:16px">+ Novo modelo</button>
+      <div id="tpl-list"></div>
+    </div>
+  `;
+  $('#btn-back').onclick = () => showPersonalHome();
+  $('#btn-new-tpl').onclick = () => showCreateTemplate();
+  const list = $('#tpl-list');
+  if (!templates.length) {
+    list.innerHTML = `<div class="empty"><p>Nenhum modelo ainda</p></div>`;
+    return;
+  }
+  templates.forEach(tpl => {
+    list.appendChild(el('div', { class: 'card' }, [
+      el('div', { style: 'font-weight:700', text: tpl.name }),
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${(tpl.exercises||[]).length} exercícios` }),
+      el('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-top:10px' }, [
+        el('button', {
+          class: 'btn btn-sm btn-primary',
+          text: 'Atribuir a aluno',
+          onClick: () => assignTemplateToStudent(tpl)
+        }),
+        el('button', {
+          class: 'btn btn-sm btn-outline',
+          text: 'Editar',
+          onClick: () => showTemplateEditor(tpl)
+        }),
+        el('button', {
+          class: 'btn btn-sm btn-outline',
+          style: 'color:var(--danger);border-color:var(--danger)',
+          text: 'Excluir',
+          onClick: async () => {
+            if (!(await confirmDialog(`Excluir modelo "${tpl.name}"?`))) return;
+            await deleteWorkoutTemplate(tpl.id);
+            toast('Modelo excluído', 'success');
+            showWorkoutLibrary();
+          }
+        })
+      ])
+    ]));
+  });
+}
+
+async function showCreateTemplate() {
+  const name = await promptDialog('Novo modelo de treino', 'Nome do treino', 'Upper A');
+  if (name === null) return;
+  if (!name.trim()) return toast('Nome obrigatório', 'error');
+  const id = await createWorkoutTemplate({
+    personalId: state.user.uid,
+    name: name.trim(),
+    exercises: []
+  });
+  toast('Modelo criado — adicione exercícios', 'success');
+  const tpl = { id, personalId: state.user.uid, name: name.trim(), exercises: [] };
+  showTemplateEditor(tpl);
+}
+
+async function showTemplateEditor(tpl) {
+  const allExercises = await getExercises(state.user.uid);
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">${tpl.name}</div>
+      <button class="icon-btn" id="btn-rename-tpl" title="Renomear">✎</button>
+    </header>
+    <div class="page">
+      <button class="btn btn-primary btn-block" id="btn-add-ex" style="margin-bottom:16px">+ Adicionar exercício</button>
+      <div id="tpl-exs"></div>
+      <button class="btn btn-outline btn-block" id="btn-assign" style="margin-top:16px">Atribuir a um aluno</button>
+    </div>
+  `;
+  $('#btn-back').onclick = () => showWorkoutLibrary();
+  $('#btn-rename-tpl').onclick = async () => {
+    const n = await promptDialog('Renomear modelo', 'Nome', tpl.name);
+    if (n === null || !n.trim()) return;
+    await updateWorkoutTemplate(tpl.id, { name: n.trim() });
+    tpl.name = n.trim();
+    toast('Renomeado', 'success');
+    showTemplateEditor(tpl);
+  };
+  $('#btn-assign').onclick = () => assignTemplateToStudent(tpl);
+  $('#btn-add-ex').onclick = () => {
+    if (!allExercises.length) return toast('Cadastre exercícios na biblioteca primeiro', 'error');
+    const listHtml = allExercises.map(ex => `
+      <div class="student-card" data-id="${ex.id}" style="cursor:pointer">
+        <div class="student-info">
+          <div class="student-name">${ex.name}</div>
+          <div class="student-meta">${ex.muscleGroup || ''}</div>
+        </div>
+      </div>`).join('');
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay open';
+    overlay.innerHTML = `<div class="modal"><div class="modal-header"><div class="modal-title">Escolher exercício</div><button class="icon-btn" id="close-modal">✕</button></div><div style="max-height:60vh;overflow-y:auto">${listHtml}</div></div>`;
+    document.body.appendChild(overlay);
+    $('#close-modal').onclick = () => overlay.remove();
+    overlay.querySelectorAll('.student-card').forEach(card => {
+      card.onclick = async () => {
+        const ex = allExercises.find(e => e.id === card.dataset.id);
+        if (!tpl.exercises) tpl.exercises = [];
+        tpl.exercises.push({
+          exerciseId: ex.id,
+          name: ex.name,
+          muscleGroup: ex.muscleGroup || '',
+          videoUrl: ex.videoUrl || '',
+          gifUrl: ex.gifUrl || '',
+          notes: ex.notes || '',
+          technique: 'normal',
+          sets: [{ reps: '10', weight: '0', rest: '60' }]
+        });
+        await updateWorkoutTemplate(tpl.id, { exercises: tpl.exercises });
+        toast('Exercício adicionado', 'success');
+        overlay.remove();
+        showTemplateEditor(tpl);
+      };
+    });
+  };
+  const list = $('#tpl-exs');
+  if (!(tpl.exercises || []).length) {
+    list.innerHTML = `<div class="empty"><p>Nenhum exercício</p></div>`;
+    return;
+  }
+  tpl.exercises.forEach((ex, idx) => {
+    list.appendChild(el('div', { class: 'card' }, [
+      el('div', { style: 'font-weight:600', text: ex.name }),
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${(ex.sets||[]).length} séries · ${ex.technique || 'normal'}` }),
+      el('div', { style: 'display:flex;gap:8px;margin-top:8px' }, [
+        el('button', {
+          class: 'btn btn-sm btn-outline',
+          text: 'Séries',
+          onClick: () => {
+            // reutiliza editor de séries com fake routine/student
+            const fakeW = { id: tpl.id, exercises: tpl.exercises, name: tpl.name };
+            showEditSets(ex, idx, fakeW, { id: 'tpl' }, { id: 'tpl' });
+            // monkey: after save, updateWorkout is called - need special path
+            // Override: patch updateWorkout calls for template - handled below by intercepting
+          }
+        }),
+        el('button', {
+          class: 'btn btn-sm btn-outline',
+          style: 'color:var(--danger)',
+          text: 'Remover',
+          onClick: async () => {
+            if (!(await confirmDialog('Remover exercício do modelo?'))) return;
+            tpl.exercises.splice(idx, 1);
+            await updateWorkoutTemplate(tpl.id, { exercises: tpl.exercises });
+            showTemplateEditor(tpl);
+          }
+        })
+      ])
+    ]));
+  });
+}
+
+// Monkey-patch: when editing sets of a template, showEditSets calls updateWorkout
+// Better approach: save template sets in showEditSets if routine.id === 'tpl'
+async function assignTemplateToStudent(tpl) {
+  const students = await getStudentsOfPersonal(state.user.uid);
+  if (!students.length) return toast('Cadastre alunos primeiro', 'error');
+  const options = {};
+  students.forEach(s => { options[s.id] = s.name; });
+  let studentId;
+  if (typeof Swal !== 'undefined') {
+    const r = await Swal.fire({
+      title: 'Atribuir a aluno',
+      input: 'select',
+      inputOptions: options,
+      inputPlaceholder: 'Selecione o aluno',
+      showCancelButton: true,
+      confirmButtonText: 'Continuar',
+      cancelButtonText: 'Cancelar',
+      confirmButtonColor: '#f59e0b'
+    });
+    if (!r.isConfirmed || !r.value) return;
+    studentId = r.value;
+  } else {
+    studentId = students[0].id;
+  }
+  const student = students.find(s => s.id === studentId);
+  let routines = await getRoutinesOfStudent(studentId, { personalId: state.user.uid });
+  let routineId;
+  if (routines.length) {
+    const ropts = {};
+    routines.forEach(r => { ropts[r.id] = r.name; });
+    ropts['__new__'] = '+ Criar nova rotina';
+    if (typeof Swal !== 'undefined') {
+      const r = await Swal.fire({
+        title: 'Rotina de destino',
+        input: 'select',
+        inputOptions: ropts,
+        showCancelButton: true,
+        confirmButtonText: 'Atribuir',
+        cancelButtonText: 'Cancelar',
+        confirmButtonColor: '#f59e0b'
+      });
+      if (!r.isConfirmed) return;
+      routineId = r.value;
+    } else {
+      routineId = routines[0].id;
+    }
+  } else {
+    routineId = '__new__';
+  }
+  if (routineId === '__new__') {
+    const rn = await promptDialog('Nome da nova rotina', '', 'Rotina principal');
+    if (rn === null) return;
+    routineId = await createRoutine({
+      name: rn.trim() || 'Rotina',
+      personalId: state.user.uid,
+      studentId
+    });
+  }
+  await createWorkout({
+    routineId,
+    personalId: state.user.uid,
+    studentId,
+    name: tpl.name,
+    order: 0,
+    exercises: JSON.parse(JSON.stringify(tpl.exercises || [])),
+    startDate: firebase.firestore.Timestamp.now(),
+    endDate: null
+  });
+  toast(`Treino "${tpl.name}" atribuído a ${student.name}`, 'success');
+}
+
+async function copyWorkoutBetweenStudents(workout, sourceStudent, sourceRoutine) {
+  const students = await getStudentsOfPersonal(state.user.uid);
+  const others = students.filter(s => s.id !== sourceStudent.id);
+  if (!others.length) return toast('Não há outro aluno para copiar', 'error');
+  const options = {};
+  others.forEach(s => { options[s.id] = s.name; });
+  const mode = typeof Swal !== 'undefined'
+    ? (await Swal.fire({
+        title: workout.name,
+        text: 'Copiar mantém o original. Cortar move o treino.',
+        showDenyButton: true,
+        showCancelButton: true,
+        confirmButtonText: 'Copiar',
+        denyButtonText: 'Cortar',
+        cancelButtonText: 'Cancelar',
+        confirmButtonColor: '#f59e0b',
+        denyButtonColor: '#dc2626'
+      }))
+    : { isConfirmed: true };
+  if (mode.isDismissed) return;
+  const cut = mode.isDenied === true;
+  let targetId;
+  if (typeof Swal !== 'undefined') {
+    const r = await Swal.fire({
+      title: cut ? 'Cortar para aluno' : 'Copiar para aluno',
+      input: 'select',
+      inputOptions: options,
+      showCancelButton: true,
+      confirmButtonText: 'Continuar',
+      cancelButtonText: 'Cancelar',
+      confirmButtonColor: '#f59e0b'
+    });
+    if (!r.isConfirmed || !r.value) return;
+    targetId = r.value;
+  } else {
+    targetId = others[0].id;
+  }
+  const target = others.find(s => s.id === targetId);
+  let routines = await getRoutinesOfStudent(targetId, { personalId: state.user.uid });
+  let routineId;
+  if (routines.length) {
+    const ropts = {};
+    routines.forEach(r => { ropts[r.id] = r.name; });
+    ropts['__new__'] = '+ Nova rotina';
+    if (typeof Swal !== 'undefined') {
+      const r = await Swal.fire({
+        title: 'Rotina de destino',
+        input: 'select',
+        inputOptions: ropts,
+        showCancelButton: true,
+        confirmButtonText: 'OK',
+        cancelButtonText: 'Cancelar',
+        confirmButtonColor: '#f59e0b'
+      });
+      if (!r.isConfirmed) return;
+      routineId = r.value;
+    } else routineId = routines[0].id;
+  } else routineId = '__new__';
+  if (routineId === '__new__') {
+    const rn = await promptDialog('Nome da rotina', '', 'Rotina principal');
+    if (rn === null) return;
+    routineId = await createRoutine({
+      name: rn.trim() || 'Rotina',
+      personalId: state.user.uid,
+      studentId: targetId
+    });
+  }
+  await copyWorkoutToStudent(workout, targetId, routineId, state.user.uid, {
+    cut,
+    sourceWorkoutId: cut ? workout.id : null
+  });
+  toast(cut ? `Treino movido para ${target.name}` : `Treino copiado para ${target.name}`, 'success');
+  if (cut) showRoutineDetail(sourceRoutine, sourceStudent);
 }
 
 async function showChat(student) {

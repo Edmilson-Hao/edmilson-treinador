@@ -30,7 +30,21 @@ export function el(tag, attrs = {}, children = []) {
 }
 
 export function toast(message, type = 'info') {
-  // remove toast antigo para não deixar “fantasma” na tela
+  if (typeof Swal !== 'undefined') {
+    const icon = type === 'error' ? 'error' : type === 'success' ? 'success' : 'info';
+    Swal.fire({
+      toast: true,
+      position: 'top-end',
+      icon,
+      title: message,
+      showConfirmButton: false,
+      timer: 2800,
+      timerProgressBar: true,
+      background: getComputedStyle(document.documentElement).getPropertyValue('--elevated').trim() || '#1e293b',
+      color: getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#f1f5f9'
+    });
+    return;
+  }
   document.querySelectorAll('.toast').forEach(n => n.remove());
   const t = el('div', { class: `toast ${type}` });
   t.textContent = message;
@@ -181,27 +195,43 @@ export function showModal(contentHtml, title = '') {
   return overlay;
 }
 
-export function confirmDialog(message) {
-  return new Promise((resolve) => {
-    const overlay = el('div', { class: 'modal-overlay open' }, [
-      el('div', { class: 'modal' }, [
-        el('p', { text: message, style: 'margin-bottom:20px;font-size:1rem;' }),
-        el('div', { class: 'btn-group' }, [
-          el('button', {
-            class: 'btn btn-outline',
-            text: 'Cancelar',
-            onClick: () => { overlay.remove(); resolve(false); }
-          }),
-          el('button', {
-            class: 'btn btn-primary',
-            text: 'Confirmar',
-            onClick: () => { overlay.remove(); resolve(true); }
-          })
-        ])
-      ])
-    ]);
-    document.body.appendChild(overlay);
-  });
+export async function confirmDialog(message, title = 'Confirmar') {
+  if (typeof Swal !== 'undefined') {
+    const r = await Swal.fire({
+      title,
+      text: message,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Confirmar',
+      cancelButtonText: 'Cancelar',
+      confirmButtonColor: '#f59e0b',
+      cancelButtonColor: '#64748b',
+      background: getComputedStyle(document.documentElement).getPropertyValue('--elevated').trim() || '#1e293b',
+      color: getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#f1f5f9'
+    });
+    return r.isConfirmed;
+  }
+  return window.confirm(message);
+}
+
+/** Prompt com SweetAlert2 */
+export async function promptDialog(title, inputLabel = '', defaultValue = '') {
+  if (typeof Swal !== 'undefined') {
+    const r = await Swal.fire({
+      title,
+      input: 'text',
+      inputLabel,
+      inputValue: defaultValue,
+      showCancelButton: true,
+      confirmButtonText: 'OK',
+      cancelButtonText: 'Cancelar',
+      confirmButtonColor: '#f59e0b',
+      background: getComputedStyle(document.documentElement).getPropertyValue('--elevated').trim() || '#1e293b',
+      color: getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#f1f5f9'
+    });
+    return r.isConfirmed ? (r.value || '') : null;
+  }
+  return window.prompt(title, defaultValue);
 }
 
 
