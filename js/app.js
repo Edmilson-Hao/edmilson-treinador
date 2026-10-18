@@ -548,8 +548,7 @@ async function renderPersonalTab(tab, students, stats) {
           <div class="label">Chave PIX</div>
         </div>
       </div>
-      <p class="text-muted" style="font-size:0.75rem;margin-top:16px;text-align:center">Backup, limpeza e tema ficam no menu ⋯ do topo</p>
-    `;
+          `;
 
     $('#btn-copy-code')?.addEventListener('click', () => {
       navigator.clipboard.writeText(state.profile.inviteCode || '');
@@ -1960,8 +1959,7 @@ async function showStudentHome() {
             <div class="label" style="${openPlans.length ? 'color:var(--danger);font-weight:700' : ''}">${openPlans.length ? `Faturas (${openPlans.length})` : 'Faturas'}</div>
           </div>
         </div>
-        <p class="text-muted" style="font-size:0.75rem;text-align:center;margin-top:8px">Chat, perfil e sair ficam no topo (💬 e ⋯)</p>
-        <div class="page-title" style="margin-top:8px">Rotinas concluídas</div>
+                <div class="page-title" style="margin-top:8px">Rotinas concluídas</div>
         <div id="home-recent"></div>
       `;
       $('#go-treinos').onclick = () => renderNav('treinos');
