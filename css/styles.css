@@ -1174,3 +1174,34 @@ details.card[open] summary::after { content: ' ▴'; }
   min-width: 240px;
   box-shadow: 0 20px 50px rgba(0,0,0,0.5);
 }
+
+
+.next-workout-cta {
+  border: 1.5px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--card));
+  text-align: left;
+}
+
+/* Tema claro aprimorado */
+[data-theme="light"] {
+  --bg: #f1f5f9;
+  --card: #ffffff;
+  --elevated: #e2e8f0;
+  --text: #0f172a;
+  --muted: #64748b;
+  --border: #cbd5e1;
+  --accent: #d97706;
+  --success: #059669;
+  --danger: #dc2626;
+}
+[data-theme="light"] .app-header,
+[data-theme="light"] .bottom-nav {
+  background: #fff;
+  border-color: var(--border);
+}
+[data-theme="light"] .wo-rest-overlay {
+  background: rgba(15, 23, 42, 0.45);
+}
+[data-theme="light"] .next-workout-cta {
+  background: #fff7ed;
+}

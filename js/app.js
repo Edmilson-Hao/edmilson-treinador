@@ -4,7 +4,7 @@
 
 import { firebaseConfig, initAppCheckIfConfigured } from './firebase-config.js';
 import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEmail, logout, createStudentAccount, completeGoogleRedirectIfAny } from './shared/auth.js';
-import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, getGlobalExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, updateRoutine, archiveRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, deleteWorkout, cloneRoutine, getRoutineTemplates, createRoutineTemplate, updateRoutineTemplate, deleteRoutineTemplate, importRoutineTemplate, saveRoutineAsTemplate, copyWorkoutToStudent, cleanupExpiredCoachReplies, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, markCoachReplyRead, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan, sendChatMessage, getChatMessages, upsertReminder, getRemindersForStudent, getRemindersForPersonal } from './shared/db.js';
+import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, getGlobalExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, updateRoutine, archiveRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, deleteWorkout, cloneRoutine, getRoutineTemplates, createRoutineTemplate, updateRoutineTemplate, deleteRoutineTemplate, importRoutineTemplate, saveRoutineAsTemplate, copyWorkoutToStudent, cleanupExpiredCoachReplies, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, markCoachReplyRead, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan, sendChatMessage, getChatMessages, upsertReminder, getRemindersForStudent, getRemindersForPersonal, saveAnamnese, getAnamnesesOfStudent, updateAnamnese, seedGlobalExercises, createReminder } from './shared/db.js';
 import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, mediaHtml, isGifUrl, confirmDialog, promptDialog, generateInviteCode, compressImageToBase64 } from './shared/utils.js';
 
 // Captura erros de rate-limit e mostra toast amigável
@@ -52,6 +52,9 @@ async function boot() {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register((window.location.pathname.replace(/\/[^/]*$/, '/') || '/') + 'sw.js').catch(console.warn);
   }
+  // Prefetch: mantém sessão de treino legível offline
+  window.__et_offline = window.__et_offline || {};
+
 
   // Monitor de conexão
   window.addEventListener('online', () => $('#offline-badge')?.classList.remove('show'));
@@ -653,7 +656,6 @@ async function renderPersonalTab(tab, students, stats) {
       content.dataset.libSub = s;
       $$('#lib-subs .sub-tab').forEach(b => b.classList.toggle('active', b.dataset.sub === s));
       if (s === 'modelos') {
-        // reusa lista embutida sem sair da tab
         body.innerHTML = `<p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">Rotinas prontas para importar em alunos.</p>
           <button class="btn btn-primary btn-block" id="btn-open-models" style="margin-bottom:12px">Abrir biblioteca de modelos</button>
           <button class="btn btn-outline btn-block" id="btn-new-model">+ Novo modelo</button>`;
@@ -661,6 +663,26 @@ async function renderPersonalTab(tab, students, stats) {
         $('#btn-new-model').onclick = () => showCreateRoutineTemplate();
       } else {
         await renderExercisesTab(body);
+        if (isAppAdmin()) {
+          const seedBtn = el('button', {
+            class: 'btn btn-outline btn-block',
+            style: 'margin-top:12px',
+            text: '📥 Popular lista padrão (exercícios base)',
+            id: 'btn-seed-global'
+          });
+          body.appendChild(seedBtn);
+          seedBtn.onclick = async () => {
+            if (!(await confirmDialog('Adicionar exercícios da lista base na biblioteca padrão? (não duplica nomes existentes)'))) return;
+            try {
+              toast('Importando exercícios...', 'info');
+              const r = await seedGlobalExercises();
+              toast(`Pronto: +${r.added} novos (total ~${r.total})`, 'success');
+              await paint('exercicios');
+            } catch (e) {
+              toast(e.message || 'Erro ao popular lista', 'error');
+            }
+          };
+        }
       }
     };
     $$('#lib-subs .sub-tab').forEach(b => {
@@ -935,6 +957,7 @@ async function showStudentDetail(student) {
     <header class="app-header">
       <button class="icon-btn" id="btn-back">←</button>
       <div class="title" style="flex:1;text-align:center">${student.name}</div>
+      <button class="icon-btn" id="btn-overview" title="Resumo">📊</button>
       <button class="icon-btn" id="btn-chat" title="Chat">💬</button>
       <button class="icon-btn" id="btn-student-profile" title="Perfil">👤</button>
     </header>
@@ -950,6 +973,15 @@ async function showStudentDetail(student) {
   $('#btn-home')?.addEventListener('click', () => showPersonalHome());
   $('#btn-student-profile')?.addEventListener('click', () => showUserProfile(student));
   $('#btn-chat')?.addEventListener('click', () => showChat(student));
+  $('#btn-overview')?.addEventListener('click', () => showPersonalStudentOverview(student));
+  $('#btn-anamnese-p')?.addEventListener('click', async () => {
+    try {
+      const list = await getAnamnesesOfStudent(student.id);
+      if (list[0]) showAnamneseDetail(list[0], false);
+      else toast('Sem anamnese ainda', 'info');
+    } catch (e) { toast(e.message || 'Erro', 'error'); }
+  });
+  $('#btn-remind-p')?.addEventListener('click', () => showSetReminder(student));
 
   $$('.tab').forEach(tab => {
     tab.onclick = () => {
@@ -1839,6 +1871,97 @@ async function showUserProfile(targetUser = null, readOnly = false) {
   });
 }
 
+
+/** Calcula streak de dias consecutivos com treino concluído */
+function calcStreak(completed) {
+  if (!completed?.length) return 0;
+  const days = new Set();
+  completed.forEach(c => {
+    const t = c.finishedAt?.toMillis?.() || (c.finishedAt ? new Date(c.finishedAt).getTime() : 0);
+    if (!t) return;
+    const d = new Date(t);
+    days.add(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`);
+  });
+  let streak = 0;
+  const cur = new Date();
+  cur.setHours(12, 0, 0, 0);
+  // permite "hoje ou ontem" como âncora
+  for (let i = 0; i < 365; i++) {
+    const key = `${cur.getFullYear()}-${cur.getMonth()}-${cur.getDate()}`;
+    if (days.has(key)) {
+      streak++;
+      cur.setDate(cur.getDate() - 1);
+    } else if (i === 0) {
+      cur.setDate(cur.getDate() - 1); // ainda não treinou hoje
+    } else {
+      break;
+    }
+  }
+  return streak;
+}
+
+function badgeForStreak(streak, totalDone) {
+  const badges = [];
+  if (streak >= 3) badges.push({ icon: '🔥', label: `${streak} dias seguidos` });
+  if (streak >= 7) badges.push({ icon: '⚡', label: 'Semana fechada' });
+  if (totalDone >= 10) badges.push({ icon: '💪', label: '10 treinos' });
+  if (totalDone >= 30) badges.push({ icon: '🏆', label: '30 treinos' });
+  return badges;
+}
+
+/** Próximo treino ativo (dentro da janela de datas) */
+async function resolveNextWorkout(routines) {
+  const now = Date.now();
+  for (const r of routines) {
+    let workouts = [];
+    try {
+      workouts = await getWorkoutsOfRoutine(r.id, { studentId: state.user.uid });
+    } catch {
+      try { workouts = await getWorkoutsOfRoutine(r.id); } catch { workouts = []; }
+    }
+    // cache offline
+    try {
+      localStorage.setItem(`et_cache_workouts_${r.id}`, JSON.stringify(workouts));
+      localStorage.setItem(`et_cache_routine_${r.id}`, JSON.stringify(r));
+    } catch {}
+    for (const w of workouts) {
+      const start = w.startDate?.toMillis?.() || 0;
+      const end = w.endDate?.toMillis?.() || Infinity;
+      if (start && start > now) continue;
+      if (end && end < now) continue;
+      return { routine: r, workout: w };
+    }
+  }
+  // fallback: primeiro treino de qualquer rotina
+  for (const r of routines) {
+    try {
+      const workouts = JSON.parse(localStorage.getItem(`et_cache_workouts_${r.id}`) || '[]');
+      if (workouts[0]) return { routine: r, workout: workouts[0] };
+    } catch {}
+  }
+  return null;
+}
+
+function scheduleLocalReminder(title, body, whenMs) {
+  const delay = whenMs - Date.now();
+  if (delay < 0 || delay > 7 * 86400000) return;
+  if (!('Notification' in window)) return;
+  const fire = () => {
+    if (Notification.permission === 'granted') {
+      try {
+        new Notification(title, { body, icon: 'assets/icons/icon-192.png' });
+      } catch {}
+    }
+  };
+  if (Notification.permission === 'granted') {
+    setTimeout(fire, delay);
+  } else if (Notification.permission !== 'denied') {
+    Notification.requestPermission().then(p => {
+      if (p === 'granted') setTimeout(fire, delay);
+    });
+  }
+}
+
 async function showStudentHome() {
   let routines = [];
   let completed = [];
@@ -1930,6 +2053,9 @@ async function showStudentHome() {
     const main = $('#student-main');
     if (nav === 'inicio') {
       const openPlans = plans.filter(p => ['pendente','ativo','aguardando'].includes(p.status || 'pendente'));
+      const streak = calcStreak(completed);
+      const badges = badgeForStreak(streak, completed.length);
+      const unreadFb = unreadCoachReplies(completed);
       main.innerHTML = `
         <div class="card" style="display:flex;align-items:center;gap:14px">
           <label class="profile-photo-edit" title="Trocar foto">
@@ -1937,18 +2063,35 @@ async function showStudentHome() {
             <span class="edit-badge">Foto</span>
             <input type="file" id="student-photo" accept="image/*">
           </label>
-          <div>
+          <div style="flex:1">
             <div style="font-weight:700">Olá, ${state.profile.name || 'aluno'}! 💪</div>
-            <div class="text-muted" style="font-size:0.8rem">Toque na foto para alterar</div>
+            <div class="text-muted" style="font-size:0.8rem">
+              ${streak > 0 ? `🔥 ${streak} dia${streak > 1 ? 's' : ''} seguido${streak > 1 ? 's' : ''}` : 'Comece sua sequência de treinos'}
+            </div>
           </div>
         </div>
+        ${badges.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0">${badges.map(b =>
+          `<span class="badge" style="background:var(--elevated);padding:6px 10px">${b.icon} ${b.label}</span>`
+        ).join('')}</div>` : ''}
+        ${unreadFb.length ? `
+        <div class="card" id="coach-reply-banner" style="border:1.5px solid var(--accent);cursor:pointer;margin-bottom:12px">
+          <div style="font-weight:700;color:var(--accent)">💬 Seu personal respondeu!</div>
+          <div class="text-muted" style="font-size:0.85rem;margin-top:4px">
+            ${unreadFb.length} mensagem(ns) sobre treino — toque para ver
+          </div>
+        </div>` : ''}
         ${dueSoon.length ? `<div class="card note" style="border-color:#f59e0b;margin-bottom:12px">
           ⚠️ ${dueSoon.length} fatura(s) vencendo em até 5 dias — veja em Financeiro.
         </div>` : ''}
-        <div class="stat-row">
-          <div class="stat-card"><div class="stat-value">${routines.length}</div><div class="stat-label">Rotinas</div></div>
-          <div class="stat-card"><div class="stat-value">${completed.length}</div><div class="stat-label">Rotinas concluídas</div></div>
-          <div class="stat-card"><div class="stat-value">${openPlans.length}</div><div class="stat-label">Faturas abertas</div></div>
+        <div id="next-workout-slot">
+          <div class="card" style="text-align:center;padding:20px">
+            <div class="text-muted">Carregando próximo treino...</div>
+          </div>
+        </div>
+        <div class="stat-row" style="margin-top:12px">
+          <div class="stat-card"><div class="stat-value">${streak}</div><div class="stat-label">Sequência</div></div>
+          <div class="stat-card"><div class="stat-value">${completed.length}</div><div class="stat-label">Concluídos</div></div>
+          <div class="stat-card"><div class="stat-value">${openPlans.length}</div><div class="stat-label">Faturas</div></div>
         </div>
         <div class="section-label">Acesso rápido</div>
         <div class="action-grid compact">
@@ -1958,14 +2101,17 @@ async function showStudentHome() {
             <div class="icon">${openPlans.length ? '🚨' : '💰'}</div>
             <div class="label" style="${openPlans.length ? 'color:var(--danger);font-weight:700' : ''}">${openPlans.length ? `Faturas (${openPlans.length})` : 'Faturas'}</div>
           </div>
+          <div class="action-item" id="go-anamnese"><div class="icon">📋</div><div class="label">Anamnese</div></div>
         </div>
-                <div class="page-title" style="margin-top:8px">Rotinas concluídas</div>
+        <div class="section-label" style="margin-top:8px">Últimos treinos</div>
         <div id="home-recent"></div>
       `;
       $('#go-treinos').onclick = () => renderNav('treinos');
-      $('#go-fin').onclick = () => renderNav('financeiro');
       $('#go-hist').onclick = () => renderNav('historico');
-                  $('#student-photo')?.addEventListener('change', async (e) => {
+      $('#go-fin').onclick = () => renderNav('financeiro');
+      $('#go-anamnese')?.addEventListener('click', () => showStudentAnamnese());
+      $('#coach-reply-banner')?.addEventListener('click', () => renderNav('historico'));
+      $('#student-photo')?.addEventListener('change', async (e) => {
         const f = e.target.files?.[0];
         if (!f) return;
         const url = await saveProfilePhoto(f);
@@ -1973,13 +2119,39 @@ async function showStudentHome() {
       });
       const hr = $('#home-recent');
       if (!completed.length) hr.innerHTML = `<p class="text-muted" style="font-size:0.85rem">Nenhum treino ainda</p>`;
-      else completed.slice(0,3).forEach(c => {
+      else completed.slice(0, 3).forEach(c => {
         hr.appendChild(el('div', { class: 'card', style: 'cursor:pointer', onClick: () => showStudentCompletedDetail(c) }, [
           el('div', { style: 'font-weight:600', text: c.workoutName || 'Treino' }),
-          el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) })
+          el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) }),
+          c.coachReply && !c.coachReplyRead
+            ? el('div', { style: 'color:var(--accent);font-size:0.8rem;margin-top:4px', text: '💬 Nova resposta do personal' })
+            : null
         ]));
       });
-    } else if (nav === 'treinos') {
+      // Próximo treino (CTA grande)
+      resolveNextWorkout(routines).then(next => {
+        const slot = $('#next-workout-slot');
+        if (!slot) return;
+        if (!next) {
+          slot.innerHTML = `<div class="card note"><p style="margin:0">Nenhum treino ativo. Seu personal ainda vai liberar a ficha.</p></div>`;
+          return;
+        }
+        const { workout, routine } = next;
+        const nEx = (workout.exercises || []).length;
+        slot.innerHTML = `
+          <div class="card next-workout-cta">
+            <div class="text-muted" style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.04em;font-weight:700">Próximo treino</div>
+            <div style="font-weight:800;font-size:1.35rem;margin:6px 0">${workout.name}</div>
+            <div class="text-muted" style="font-size:0.85rem">${routine.name || ''} · ${nEx} exercício(s)</div>
+            <button class="btn btn-primary btn-block" id="btn-train-now" style="margin-top:14px;padding:14px;font-size:1.05rem">▶ Treinar agora</button>
+          </div>
+        `;
+        $('#btn-train-now').onclick = () => showStudentWorkout(workout, routine);
+      }).catch(() => {
+        const slot = $('#next-workout-slot');
+        if (slot) slot.innerHTML = `<div class="card note">Não foi possível carregar o treino. Tente em Treinos.</div>`;
+      });
+        } else if (nav === 'treinos') {
       main.innerHTML = `
         <div class="page-title">Rotinas e treinos</div>
         <div id="student-routines"></div>
@@ -2575,6 +2747,10 @@ async function showStudentWorkout(workout, routine) {
   const app = $('#app');
   const exercises = workout.exercises || [];
   const storageKey = `workout_session_${state.user.uid}_${workout.id}`;
+  // Snapshot offline da ficha
+  try {
+    localStorage.setItem(`et_offline_workout_${workout.id}`, JSON.stringify({ workout, routine, savedAt: Date.now() }));
+  } catch {}
 
   let session = {
     started: false,
@@ -2759,6 +2935,7 @@ async function showStudentWorkout(workout, routine) {
             </div>
             ${doneMap[focusIdx] ? '<span class="badge" style="background:var(--success);color:#fff">Concluído</span>' : ''}
           </div>
+          <div id="load-delta" class="text-muted" style="font-size:0.8rem;margin-bottom:8px"></div>
           ${(focus.gifUrl || focus.videoUrl) ? mediaHtml(focus.gifUrl || focus.videoUrl) : ''}
           ${focus.combinedMedia ? mediaHtml(focus.combinedMedia) : ''}
           ${techniqueHint(focus) ? `<div class="card note" style="font-size:0.8rem;margin:8px 0">${techniqueHint(focus)}</div>` : ''}
@@ -2877,6 +3054,30 @@ async function showStudentWorkout(workout, routine) {
         persist();
         render();
       });
+    }
+
+    // Comparação de carga vs último treino
+    if (focus) {
+      (async () => {
+        try {
+          const hist = await getCompletedByStudent(state.user.uid, 15);
+          const pts = typeof buildExerciseProgression === 'function'
+            ? buildExerciseProgression(hist, focus.name)
+            : [];
+          const box = $('#load-delta');
+          if (!box || pts.length < 1) return;
+          const last = pts[pts.length - 1];
+          const prev = pts.length > 1 ? pts[pts.length - 2] : null;
+          if (!prev) {
+            box.textContent = `Última carga máx.: ${last.max} kg`;
+            return;
+          }
+          const diff = +(last.max - prev.max).toFixed(1);
+          if (diff > 0) box.innerHTML = `<span style="color:var(--success)">↑ +${diff} kg vs treino anterior</span> (agora ${last.max} kg)`;
+          else if (diff < 0) box.innerHTML = `<span style="color:var(--danger)">↓ ${diff} kg vs anterior</span> (agora ${last.max} kg)`;
+          else box.textContent = `Carga estável: ${last.max} kg`;
+        } catch {}
+      })();
     }
 
     // Séries do exercício em foco
@@ -3448,6 +3649,371 @@ function showExerciseProgression(completed) {
   };
 }
 
+
+
+// ===================== ANAMNESE =====================
+async function showStudentAnamnese() {
+  let list = [];
+  try { list = await getAnamnesesOfStudent(state.user.uid); } catch (e) { console.warn(e); }
+  const latest = list[0];
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">Anamnese</div>
+      <div style="width:40px"></div>
+    </header>
+    <div class="page">
+      <p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">
+        Questionário de saúde e objetivos. Respostas ficam só entre você e seu personal (LGPD).
+      </p>
+      ${latest ? `<div class="card" style="margin-bottom:12px">
+        <div style="font-weight:600">Último envio: ${formatDateTime(latest.createdAt)}</div>
+        <div class="text-muted" style="font-size:0.8rem">Status: ${latest.status || 'enviado'}</div>
+        <button class="btn btn-sm btn-outline" id="btn-view-last" style="margin-top:8px">Ver respostas</button>
+      </div>` : ''}
+      <button class="btn btn-primary btn-block" id="btn-new-an">+ Preencher nova anamnese</button>
+    </div>
+  `;
+  $('#btn-back').onclick = () => showStudentHome();
+  $('#btn-view-last')?.addEventListener('click', () => showAnamneseDetail(latest, true));
+  $('#btn-new-an').onclick = () => showAnamneseForm();
+}
+
+async function showAnamneseForm(existing = null) {
+  const app = $('#app');
+  const data = existing?.answers || {};
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">Nova anamnese</div>
+      <div style="width:40px"></div>
+    </header>
+    <div class="page" style="padding-bottom:100px">
+      <div class="card note" style="font-size:0.85rem">Módulos essenciais. Em sintomas graves, procure atendimento médico — isto não substitui o PAR-Q+ oficial nem avaliação clínica.</div>
+
+      <div class="section-label">1. Objetivos</div>
+      <div class="form-group"><label class="form-label">Objetivo principal</label>
+        <select class="form-select" id="an-goal">
+          <option value="">Selecione...</option>
+          ${['Força','Hipertrofia','Emagrecimento','Saúde / qualidade de vida','Condicionamento','Mobilidade','Retorno após lesão','Recomposição corporal','Outro'].map(o =>
+            `<option value="${o}" ${data.goal===o?'selected':''}>${o}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">O que motivou procurar um personal?</label>
+        <textarea class="form-textarea" id="an-why">${data.why||''}</textarea>
+      </div>
+      <div class="form-group"><label class="form-label">Comprometimento (0–10)</label>
+        <input type="number" class="form-input" id="an-commit" min="0" max="10" value="${data.commit ?? 8}">
+      </div>
+      <div class="form-group"><label class="form-label">Maior dificuldade atual</label>
+        <input class="form-input" id="an-hard" value="${data.hard||''}">
+      </div>
+
+      <div class="section-label">2. PAR-Q simplificado (triagem)</div>
+      <p class="text-muted" style="font-size:0.8rem">Responda com honestidade. “Sim” em itens críticos pode exigir liberação médica.</p>
+      ${[
+        ['parq1','Dor no peito em repouso ou esforço?'],
+        ['parq2','Falta de ar desproporcional?'],
+        ['parq3','Desmaio ou tontura recorrente?'],
+        ['parq4','Palpitações com mal-estar?'],
+        ['parq5','Médico já disse para não fazer exercício sem supervisão?'],
+        ['parq6','Lesão óssea/articular que piora com exercício?'],
+        ['parq7','Medicamento para pressão ou coração?'],
+        ['parq8','Outro motivo para não fazer atividade física?']
+      ].map(([id,lab]) => `
+        <div class="form-group">
+          <label class="form-label">${lab}</label>
+          <select class="form-select" id="${id}">
+            <option value="nao" ${(data[id]||'nao')==='nao'?'selected':''}>Não</option>
+            <option value="sim" ${data[id]==='sim'?'selected':''}>Sim</option>
+          </select>
+        </div>`).join('')}
+
+      <div class="section-label">3. Saúde e lesões</div>
+      <div class="form-group"><label class="form-label">Condições diagnosticadas (se houver)</label>
+        <textarea class="form-textarea" id="an-conditions" placeholder="Ex.: hipertensão controlada, asma...">${data.conditions||''}</textarea>
+      </div>
+      <div class="form-group"><label class="form-label">Medicamentos / suplementos</label>
+        <textarea class="form-textarea" id="an-meds">${data.meds||''}</textarea>
+      </div>
+      <div class="form-group"><label class="form-label">Lesões, cirurgias ou dores atuais</label>
+        <textarea class="form-textarea" id="an-injuries">${data.injuries||''}</textarea>
+      </div>
+      <div class="form-group"><label class="form-label">Movimentos contraindicados</label>
+        <input class="form-input" id="an-avoid" value="${data.avoid||''}">
+      </div>
+
+      <div class="section-label">4. Treino e rotina</div>
+      <div class="form-group"><label class="form-label">Nível</label>
+        <select class="form-select" id="an-level">
+          ${['Iniciante','Retornando','Intermediário','Avançado'].map(o =>
+            `<option ${data.level===o?'selected':''}>${o}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Dias/semana realistas</label>
+        <input type="number" class="form-input" id="an-days" min="1" max="7" value="${data.days||3}">
+      </div>
+      <div class="form-group"><label class="form-label">Minutos por sessão</label>
+        <select class="form-select" id="an-mins">
+          ${['até 30','31–45','46–60','61–90','90+'].map(o =>
+            `<option ${data.mins===o?'selected':''}>${o}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Local (academia / casa)</label>
+        <input class="form-input" id="an-place" value="${data.place||''}">
+      </div>
+      <div class="form-group"><label class="form-label">Sono (horas) e estresse 0–10</label>
+        <div style="display:flex;gap:8px">
+          <input class="form-input" id="an-sleep" placeholder="Sono h" value="${data.sleep||''}">
+          <input class="form-input" id="an-stress" type="number" min="0" max="10" placeholder="Estresse" value="${data.stress??5}">
+        </div>
+      </div>
+
+      <div class="section-label">5. Medidas (opcional)</div>
+      <div style="display:flex;gap:8px">
+        <div class="form-group" style="flex:1"><label class="form-label">Peso kg</label><input class="form-input" id="an-weight" type="number" step="0.1" value="${data.weight||''}"></div>
+        <div class="form-group" style="flex:1"><label class="form-label">Altura cm</label><input class="form-input" id="an-height" type="number" value="${data.height||''}"></div>
+      </div>
+
+      <div class="section-label">6. Consentimento</div>
+      <label style="display:flex;gap:10px;align-items:flex-start;font-size:0.85rem;margin-bottom:16px">
+        <input type="checkbox" id="an-consent" ${data.consent?'checked':''} style="margin-top:4px">
+        <span>Declaro que as informações são verdadeiras e autorizo o uso para prescrição e acompanhamento do treino, nos termos da LGPD. Comunicarei mudanças relevantes de saúde.</span>
+      </label>
+      <button class="btn btn-primary btn-block" id="btn-save-an">Enviar anamnese</button>
+    </div>
+  `;
+  $('#btn-back').onclick = () => showStudentAnamnese();
+  $('#btn-save-an').onclick = async () => {
+    if (!$('#an-consent').checked) return toast('Marque o consentimento', 'error');
+    const answers = {
+      goal: $('#an-goal').value,
+      why: $('#an-why').value.trim(),
+      commit: +$('#an-commit').value,
+      hard: $('#an-hard').value.trim(),
+      parq1: $('#parq1').value, parq2: $('#parq2').value, parq3: $('#parq3').value,
+      parq4: $('#parq4').value, parq5: $('#parq5').value, parq6: $('#parq6').value,
+      parq7: $('#parq7').value, parq8: $('#parq8').value,
+      conditions: $('#an-conditions').value.trim(),
+      meds: $('#an-meds').value.trim(),
+      injuries: $('#an-injuries').value.trim(),
+      avoid: $('#an-avoid').value.trim(),
+      level: $('#an-level').value,
+      days: +$('#an-days').value,
+      mins: $('#an-mins').value,
+      place: $('#an-place').value.trim(),
+      sleep: $('#an-sleep').value.trim(),
+      stress: +$('#an-stress').value,
+      weight: $('#an-weight').value,
+      height: $('#an-height').value,
+      consent: true
+    };
+    const parqFlags = ['parq1','parq2','parq3','parq4','parq5','parq6','parq7','parq8'].filter(k => answers[k]==='sim');
+    try {
+      await saveAnamnese({
+        studentId: state.user.uid,
+        studentName: state.profile.name || '',
+        personalId: state.profile.personalId,
+        answers,
+        parqFlags,
+        status: parqFlags.length ? 'revisar' : 'enviado'
+      });
+      toast(parqFlags.length ? 'Enviado — personal deve revisar triagem' : 'Anamnese enviada!', 'success');
+      showStudentAnamnese();
+    } catch (e) {
+      toast(e.message || 'Erro ao salvar', 'error');
+    }
+  };
+}
+
+function showAnamneseDetail(doc, asStudent = false) {
+  const a = doc.answers || {};
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">Anamnese</div>
+      <div style="width:40px"></div>
+    </header>
+    <div class="page">
+      <div class="card">
+        <div class="text-muted" style="font-size:0.8rem">${formatDateTime(doc.createdAt)} · ${doc.status || ''}</div>
+        <div style="margin-top:10px"><strong>Objetivo:</strong> ${a.goal || '—'}</div>
+        <div><strong>Nível:</strong> ${a.level || '—'} · <strong>Dias:</strong> ${a.days || '—'}/sem</div>
+        <div><strong>Motivação:</strong> ${a.why || '—'}</div>
+        <div><strong>Dificuldade:</strong> ${a.hard || '—'}</div>
+        ${(doc.parqFlags||[]).length ? `<div class="card note" style="border-color:var(--danger);margin-top:10px"><strong>PAR-Q com “sim”:</strong> ${doc.parqFlags.join(', ')}</div>` : '<div style="margin-top:8px;color:var(--success)">Triagem PAR-Q sem flags</div>'}
+        <div style="margin-top:10px"><strong>Condições:</strong> ${a.conditions || '—'}</div>
+        <div><strong>Lesões/dores:</strong> ${a.injuries || '—'}</div>
+        <div><strong>Evitar:</strong> ${a.avoid || '—'}</div>
+        <div><strong>Meds:</strong> ${a.meds || '—'}</div>
+        <div><strong>Local:</strong> ${a.place || '—'} · sono ${a.sleep || '—'} · estresse ${a.stress ?? '—'}</div>
+        ${a.weight || a.height ? `<div><strong>Peso/altura:</strong> ${a.weight || '—'} kg / ${a.height || '—'} cm</div>` : ''}
+        ${doc.trainerNotes ? `<div class="card note note-accent" style="margin-top:12px"><strong>Notas do personal:</strong><br>${doc.trainerNotes}</div>` : ''}
+      </div>
+      ${!asStudent ? `
+        <div class="form-group" style="margin-top:12px">
+          <label class="form-label">Notas / decisão profissional</label>
+          <textarea class="form-textarea" id="an-notes">${doc.trainerNotes||''}</textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Situação para início</label>
+          <select class="form-select" id="an-decision">
+            <option value="ok">Sem impedimentos</option>
+            <option value="adapt">Necessita adaptações</option>
+            <option value="medico">Avaliação de saúde antes</option>
+          </select>
+        </div>
+        <button class="btn btn-primary btn-block" id="btn-save-notes">Salvar revisão</button>
+      ` : ''}
+    </div>
+  `;
+  $('#btn-back').onclick = () => asStudent ? showStudentAnamnese() : showStudentDetail({ id: doc.studentId, name: doc.studentName });
+  $('#btn-save-notes')?.addEventListener('click', async () => {
+    try {
+      await updateAnamnese(doc.id, {
+        trainerNotes: $('#an-notes').value.trim(),
+        decision: $('#an-decision').value,
+        status: 'revisado',
+        reviewedAt: firebase.firestore.Timestamp.now()
+      });
+      toast('Revisão salva', 'success');
+    } catch (e) { toast(e.message || 'Erro', 'error'); }
+  });
+}
+
+async function showPersonalStudentOverview(student) {
+  const pid = state.user.uid;
+  let completed = [], plans = [], anams = [], routines = [];
+  try {
+    completed = await getCompletedByStudent(student.id, 20, { personalId: pid });
+    plans = sortPlans(await getPlansOfStudent(student.id, { personalId: pid }));
+    anams = await getAnamnesesOfStudent(student.id);
+    routines = await getRoutinesOfStudent(student.id, { personalId: pid });
+  } catch (e) { console.warn(e); }
+
+  const weekAgo = Date.now() - 7 * 86400000;
+  const weekDone = completed.filter(c => {
+    const t = c.finishedAt?.toMillis?.() || 0;
+    return t >= weekAgo;
+  }).length;
+  const openFb = completed.filter(c => c.feedback && !c.resolved).length;
+  const nextPlan = plans.find(p => ['pendente','ativo','aguardando'].includes(p.status || 'pendente'));
+  const last = completed[0];
+  const streak = calcStreak(completed);
+
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">${student.name}</div>
+      <button class="icon-btn" id="btn-pdf" title="Exportar">📄</button>
+    </header>
+    <div class="page">
+      <div class="stat-row">
+        <div class="stat-card"><div class="stat-value">${weekDone}</div><div class="stat-label">Treinos/semana</div></div>
+        <div class="stat-card"><div class="stat-value">${streak}</div><div class="stat-label">Sequência</div></div>
+        <div class="stat-card"><div class="stat-value">${openFb}</div><div class="stat-label">Feedbacks</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Resumo</div>
+        <div style="font-size:0.9rem;line-height:1.6">
+          <div><strong>Último treino:</strong> ${last ? `${last.workoutName || 'Treino'} · ${formatDateTime(last.finishedAt)}` : '—'}</div>
+          <div><strong>Próxima fatura:</strong> ${nextPlan ? `${nextPlan.label || 'Plano'} · ${formatDate(nextPlan.dueDate)} · ${nextPlan.status}` : 'Nenhuma aberta'}</div>
+          <div><strong>Rotinas ativas:</strong> ${routines.length}</div>
+          <div><strong>Anamnese:</strong> ${anams[0] ? `${formatDate(anams[0].createdAt)} (${anams[0].status})` : 'Não preenchida'}</div>
+        </div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px">
+        <button class="btn btn-primary" id="btn-open-student" style="flex:1">Abrir ficha completa</button>
+        <button class="btn btn-outline" id="btn-anamnese" style="flex:1">Anamnese</button>
+        <button class="btn btn-outline" id="btn-remind" style="flex:1">Lembrete</button>
+        <button class="btn btn-outline" id="btn-chat-s" style="flex:1">Chat</button>
+      </div>
+    </div>
+  `;
+  $('#btn-back').onclick = () => showPersonalHome();
+  $('#btn-open-student').onclick = () => showStudentDetail(student);
+  $('#btn-anamnese').onclick = () => {
+    if (anams[0]) showAnamneseDetail(anams[0], false);
+    else toast('Aluno ainda não enviou anamnese', 'info');
+  };
+  $('#btn-chat-s').onclick = () => showChat(student);
+  $('#btn-remind').onclick = () => showSetReminder(student);
+  $('#btn-pdf').onclick = () => exportStudentReportPdf(student, { completed, plans, routines, anams, weekDone, streak });
+}
+
+async function showSetReminder(student) {
+  const days = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  const html = days.map((d,i) => `
+    <label style="display:flex;align-items:center;gap:8px;margin:6px 0">
+      <input type="checkbox" class="rem-day" value="${i}"> ${d}
+    </label>`).join('');
+  if (typeof Swal !== 'undefined') {
+    const { value: form } = await Swal.fire({
+      title: `Lembrete · ${student.name}`,
+      html: `<p style="font-size:0.85rem;margin-bottom:8px">Dias e horário (notificação no aparelho quando o app puder agendar).</p>
+        ${html}
+        <input type="time" id="rem-time" value="07:00" class="swal2-input">`,
+      focusConfirm: false,
+      showCancelButton: true,
+      confirmButtonText: 'Salvar',
+      confirmButtonColor: '#f59e0b',
+      preConfirm: () => {
+        const sel = [...document.querySelectorAll('.rem-day:checked')].map(x => +x.value);
+        const time = document.getElementById('rem-time')?.value || '07:00';
+        if (!sel.length) { Swal.showValidationMessage('Escolha ao menos um dia'); return null; }
+        return { days: sel, time };
+      }
+    });
+    if (!form) return;
+    try {
+      await upsertReminder({
+        personalId: state.user.uid,
+        studentId: student.id,
+        studentName: student.name,
+        days: form.days,
+        time: form.time,
+        type: 'treino',
+        active: true
+      });
+      // agenda próximas 7 ocorrências localmente
+      const [hh, mm] = form.time.split(':').map(Number);
+      for (let i = 0; i < 7; i++) {
+        const d = new Date();
+        d.setDate(d.getDate() + i);
+        d.setHours(hh, mm, 0, 0);
+        if (form.days.includes(d.getDay()) && d.getTime() > Date.now()) {
+          scheduleLocalReminder('Hora do treino 💪', `${student.name}, seu treino te espera no Edmilson Treinador.`, d.getTime());
+        }
+      }
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+      toast('Lembrete salvo', 'success');
+    } catch (e) { toast(e.message || 'Erro', 'error'); }
+  }
+}
+
+function exportStudentReportPdf(student, ctx) {
+  const w = window.open('', '_blank');
+  if (!w) return toast('Permita pop-ups para exportar', 'error');
+  const rows = (ctx.completed || []).slice(0, 15).map(c =>
+    `<tr><td>${formatDateTime(c.finishedAt)}</td><td>${c.workoutName||''}</td><td>${c.intensity||''}</td></tr>`
+  ).join('');
+  w.document.write(`<!DOCTYPE html><html><head><title>Relatório ${student.name}</title>
+    <style>body{font-family:system-ui;padding:24px;color:#111} table{width:100%;border-collapse:collapse} td,th{border:1px solid #ccc;padding:6px;font-size:12px} h1{font-size:18px}</style>
+    </head><body>
+    <h1>Relatório — ${student.name}</h1>
+    <p>Gerado em ${new Date().toLocaleString('pt-BR')} · Edmilson Treinador</p>
+    <p>Treinos na semana: <b>${ctx.weekDone}</b> · Sequência: <b>${ctx.streak}</b> · Rotinas: <b>${(ctx.routines||[]).length}</b></p>
+    <h2>Últimos treinos</h2>
+    <table><tr><th>Data</th><th>Treino</th><th>Intensidade</th></tr>${rows || '<tr><td colspan=3>Nenhum</td></tr>'}</table>
+    <script>window.print()<\\/script>
+    </body></html>`);
+  w.document.close();
+}
 
 async function showPersonalChatHub(studentsList = null) {
   let students = studentsList;
