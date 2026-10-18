@@ -2673,7 +2673,7 @@ async function showStudentWorkout(workout, routine) {
       render();
     });
 
-    $('#btn-cancel')?.addEventListener('click', () => {
+    $('#btn-cancel')?.addEventListener('click', async () => {
       if (!(await confirmDialog('Cancelar este treino? O progresso de hoje será apagado.'))) return;
       stopTimers();
       clearSession();
