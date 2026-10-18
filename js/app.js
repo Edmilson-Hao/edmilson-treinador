@@ -337,6 +337,47 @@ function showJoinWithCode() {
 }
 
 // ---------- ÁREA DO PERSONAL ----------
+
+/** Menu ⋯ do header — itens: [{label, icon?, onClick, danger?}] */
+function openHeaderMenu(anchorBtn, items) {
+  document.querySelectorAll('.header-menu').forEach(m => m.remove());
+  const wrap = anchorBtn.closest('.header-menu-wrap') || anchorBtn.parentElement;
+  const menu = document.createElement('div');
+  menu.className = 'header-menu open';
+  items.forEach(it => {
+    if (it.sep) {
+      menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-sep' }));
+      return;
+    }
+    if (it.group) {
+      const g = document.createElement('div');
+      g.className = 'menu-group-label';
+      g.textContent = it.group;
+      menu.appendChild(g);
+      return;
+    }
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.innerHTML = `${it.icon ? it.icon + ' ' : ''}${it.label}`;
+    if (it.danger) b.style.color = 'var(--danger)';
+    b.onclick = (e) => {
+      e.stopPropagation();
+      menu.remove();
+      it.onClick?.();
+    };
+    menu.appendChild(b);
+  });
+  wrap.style.position = 'relative';
+  wrap.appendChild(menu);
+  const close = (e) => {
+    if (!menu.contains(e.target) && e.target !== anchorBtn) {
+      menu.remove();
+      document.removeEventListener('click', close);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', close), 0);
+}
+
 async function showPersonalHome() {
   let stats = { totalStudents: 0, totalWorkoutsCompleted: 0, avgAdherence: 0 };
   let students = [];
@@ -353,14 +394,17 @@ async function showPersonalHome() {
     <header class="app-header">
       <div class="title">Edmilson Treinador</div>
       <div class="actions">
-        <button class="icon-btn" id="btn-logout" title="Sair">⎋</button>
+        <button class="icon-btn" id="btn-header-chat" title="Mensagens">💬</button>
+        <div class="header-menu-wrap">
+          <button class="icon-btn" id="btn-header-more" title="Mais opções">⋯</button>
+        </div>
       </div>
     </header>
 
-    <div class="tabs">
+    <div class="tabs" id="personal-tabs">
       <button class="tab active" data-tab="inicio">Início</button>
       <button class="tab" data-tab="alunos">Alunos</button>
-      <button class="tab" data-tab="exercicios">Exercícios</button>
+      <button class="tab" data-tab="biblioteca">Biblioteca</button>
       <button class="tab" data-tab="financeiro" id="tab-financeiro">Financeiro</button>
       <button class="tab" data-tab="feedbacks" id="tab-feedbacks">Feedbacks</button>
     </div>
@@ -368,11 +412,31 @@ async function showPersonalHome() {
     <div class="page" id="main-content"></div>
   `;
 
-  $('#btn-logout').onclick = () => logout();
+  $('#btn-header-chat').onclick = () => showPersonalChatHub(students);
+  $('#btn-header-more').onclick = (e) => {
+    e.stopPropagation();
+    openHeaderMenu(e.currentTarget, [
+      { group: 'Conta' },
+      { icon: '👤', label: 'Meu perfil', onClick: () => showUserProfile() },
+      { icon: '🌓', label: 'Alternar tema', onClick: () => {
+        const cur = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+        const next = cur === 'light' ? 'dark' : 'light';
+        document.documentElement.dataset.theme = next === 'light' ? 'light' : '';
+        try { localStorage.setItem('theme', next); } catch {}
+        toast(next === 'light' ? 'Tema claro' : 'Tema escuro', 'success');
+      }},
+      { sep: true },
+      { group: 'Dados' },
+      { icon: '📦', label: 'Backup / exportar', onClick: () => exportPersonalBackup() },
+      { icon: '🧹', label: 'Limpeza de dados antigos', onClick: () => runPersonalCleanup() },
+      { sep: true },
+      { icon: '⎋', label: 'Sair', danger: true, onClick: () => logout() }
+    ]);
+  };
 
-  $$('.tab').forEach(tab => {
+  $$('#personal-tabs .tab').forEach(tab => {
     tab.onclick = () => {
-      $$('.tab').forEach(t => t.classList.remove('active'));
+      $$('#personal-tabs .tab').forEach(tb => tb.classList.remove('active'));
       tab.classList.add('active');
       renderPersonalTab(tab.dataset.tab, students, stats);
     };
@@ -439,52 +503,52 @@ async function renderPersonalTab(tab, students, stats) {
         <p class="text-muted" style="font-size:0.8rem;margin-top:8px">Envie este código para o aluno se afiliar</p>
       </div>
 
-      <div class="action-grid">
+      <div class="section-label">Ações rápidas</div>
+      <div class="action-grid compact">
         <div class="action-item" id="act-add-student">
           <div class="icon">➕</div>
-          <div class="label">Adicionar aluno</div>
+          <div class="label">Novo aluno</div>
         </div>
-        <div class="action-item" id="act-exercises">
-          <div class="icon">🏋️</div>
-          <div class="label">Biblioteca</div>
-        </div>
-        <div class="action-item" id="act-feedbacks">
-          <div class="icon">📝</div>
-          <div class="label" id="act-feedbacks-label">Feedbacks</div>
+        <div class="action-item" id="act-students">
+          <div class="icon">👥</div>
+          <div class="label">Alunos</div>
         </div>
         <div class="action-item" id="act-chat">
           <div class="icon">💬</div>
           <div class="label">Mensagens</div>
         </div>
+        <div class="action-item" id="act-feedbacks">
+          <div class="icon">📝</div>
+          <div class="label" id="act-feedbacks-label">Feedbacks</div>
+        </div>
+      </div>
+      <div class="section-label">Conteúdo</div>
+      <div class="action-grid compact">
+        <div class="action-item" id="act-exercises">
+          <div class="icon">🏋️</div>
+          <div class="label">Exercícios</div>
+        </div>
         <div class="action-item" id="act-templates">
           <div class="icon">📚</div>
-          <div class="label">Modelos rotina</div>
+          <div class="label">Modelos</div>
         </div>
+        <div class="action-item" id="act-biblioteca">
+          <div class="icon">📂</div>
+          <div class="label">Biblioteca</div>
+        </div>
+      </div>
+      <div class="section-label">Financeiro</div>
+      <div class="action-grid compact">
         <div class="action-item" id="act-financeiro">
           <div class="icon">💰</div>
-          <div class="label">Financeiro</div>
-        </div>
-        <div class="action-item" id="act-students">
-          <div class="icon">👥</div>
-          <div class="label">Ver alunos</div>
+          <div class="label">Faturas</div>
         </div>
         <div class="action-item" id="act-pix">
           <div class="icon">🔑</div>
           <div class="label">Chave PIX</div>
         </div>
-        <div class="action-item" id="act-export">
-          <div class="icon">📦</div>
-          <div class="label">Backup</div>
-        </div>
-        <div class="action-item" id="act-cleanup">
-          <div class="icon">🧹</div>
-          <div class="label">Limpeza</div>
-        </div>
-        <div class="action-item" id="act-theme">
-          <div class="icon">🌓</div>
-          <div class="label">Tema</div>
-        </div>
       </div>
+      <p class="text-muted" style="font-size:0.75rem;margin-top:16px;text-align:center">Backup, limpeza e tema ficam no menu ⋯ do topo</p>
     `;
 
     $('#btn-copy-code')?.addEventListener('click', () => {
@@ -509,41 +573,25 @@ async function renderPersonalTab(tab, students, stats) {
       });
       photoLabel.parentElement?.appendChild(btn);
     }
-    const goTab = (name) => {
-      $$('.tab').forEach(t => {
-        t.classList.toggle('active', t.dataset.tab === name);
+    const goTab = (name, sub = null) => {
+      $$('#personal-tabs .tab').forEach(tb => {
+        tb.classList.toggle('active', tb.dataset.tab === name);
       });
+      if (sub) content.dataset.libSub = sub;
       renderPersonalTab(name, students, stats);
     };
     $('#act-add-student').onclick = () => showAddStudentModal();
-    $('#act-exercises').onclick = () => goTab('exercicios');
+    $('#act-exercises').onclick = () => goTab('biblioteca', 'exercicios');
+    $('#act-templates')?.addEventListener('click', () => goTab('biblioteca', 'modelos'));
+    $('#act-biblioteca')?.addEventListener('click', () => goTab('biblioteca'));
     $('#act-feedbacks').onclick = () => goTab('feedbacks');
     $('#act-chat')?.addEventListener('click', () => showPersonalChatHub(students));
-    $('#act-templates')?.addEventListener('click', () => showRoutineLibrary());
     $('#act-students').onclick = () => goTab('alunos');
     $('#act-financeiro')?.addEventListener('click', () => goTab('financeiro'));
     $('#act-pix')?.addEventListener('click', () => showPixKeyModal());
-    $('#act-export')?.addEventListener('click', () => exportPersonalBackup());
-    $('#act-cleanup')?.addEventListener('click', async () => {
-      toast('Limpando dados expirados...', 'success');
-      try {
-        const n = await cleanupExpiredCoachReplies(state.user.uid);
-        // limpa localStorage de sessões antigas
-        Object.keys(localStorage).forEach(k => {
-          if (k.startsWith('workout_session_') || k.startsWith('workout_draft_')) {
-            try {
-              const s = JSON.parse(localStorage.getItem(k) || '{}');
-              if (s.startedAt && Date.now() - s.startedAt > 7 * 86400000) localStorage.removeItem(k);
-            } catch { localStorage.removeItem(k); }
-          }
-        });
-        toast(n ? `${n} resposta(s) antigas removidas` : 'Limpeza concluída', 'success');
-      } catch (e) { toast(e.message || 'Erro na limpeza', 'error'); }
-    });
-    $('#act-theme')?.addEventListener('click', () => toggleTheme());
   }
 
-  if (tab === 'alunos') {
+    if (tab === 'alunos') {
     if (students.length === 0) {
       content.innerHTML = `
         <div class="empty">
@@ -592,8 +640,34 @@ async function renderPersonalTab(tab, students, stats) {
     });
   }
 
-  if (tab === 'exercicios') {
-    await renderExercisesTab(content);
+  if (tab === 'exercicios' || tab === 'biblioteca') {
+    const sub = content.dataset.libSub || 'exercicios';
+    content.innerHTML = `
+      <div class="sub-tabs" id="lib-subs">
+        <button type="button" class="sub-tab ${sub==='exercicios'?'active':''}" data-sub="exercicios">Exercícios</button>
+        <button type="button" class="sub-tab ${sub==='modelos'?'active':''}" data-sub="modelos">Modelos de rotina</button>
+      </div>
+      <div id="lib-body"></div>
+    `;
+    const body = $('#lib-body');
+    const paint = async (s) => {
+      content.dataset.libSub = s;
+      $$('#lib-subs .sub-tab').forEach(b => b.classList.toggle('active', b.dataset.sub === s));
+      if (s === 'modelos') {
+        // reusa lista embutida sem sair da tab
+        body.innerHTML = `<p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">Rotinas prontas para importar em alunos.</p>
+          <button class="btn btn-primary btn-block" id="btn-open-models" style="margin-bottom:12px">Abrir biblioteca de modelos</button>
+          <button class="btn btn-outline btn-block" id="btn-new-model">+ Novo modelo</button>`;
+        $('#btn-open-models').onclick = () => showRoutineLibrary();
+        $('#btn-new-model').onclick = () => showCreateRoutineTemplate();
+      } else {
+        await renderExercisesTab(body);
+      }
+    };
+    $$('#lib-subs .sub-tab').forEach(b => {
+      b.onclick = () => paint(b.dataset.sub);
+    });
+    await paint(sub);
   }
 
   if (tab === 'financeiro') {
@@ -1798,33 +1872,42 @@ async function showStudentHome() {
     <header class="app-header">
       <div class="title">Meus Treinos</div>
       <div class="actions">
-        <button class="icon-btn" id="btn-logout" title="Sair">⎋</button>
+        <button class="icon-btn" id="btn-header-chat" title="Chat com personal">💬</button>
+        <div class="header-menu-wrap">
+          <button class="icon-btn" id="btn-header-more" title="Mais">⋯</button>
+        </div>
       </div>
     </header>
     <div class="page" style="padding-bottom:80px" id="student-main"></div>
-    <nav class="bottom-nav">
+    <nav class="bottom-nav nav-4">
       <button class="nav-item active" data-nav="inicio">
         <span>🏠</span><span>Início</span>
       </button>
       <button class="nav-item" data-nav="treinos">
         <span>🏋️</span><span>Treinos</span>
       </button>
-      <button class="nav-item" data-nav="financeiro" id="nav-fin">
-        <span>💰</span><span>Financeiro</span>
-      </button>
       <button class="nav-item" data-nav="historico">
         <span>📊</span><span>Histórico</span>
       </button>
-      <button class="nav-item" data-nav="mensagens" id="nav-msgs">
-        <span>💬</span><span>Chat</span>
-      </button>
-      <button class="nav-item" data-nav="perfil">
-        <span>👤</span><span>Perfil</span>
+      <button class="nav-item" data-nav="financeiro" id="nav-fin">
+        <span>💰</span><span>Financeiro</span>
       </button>
     </nav>
   `;
 
-  $('#btn-logout').onclick = () => logout();
+  $('#btn-header-chat').onclick = () => {
+    showChat({ id: state.user.uid, name: state.profile.personalName || 'Personal' });
+  };
+  $('#btn-header-more').onclick = (e) => {
+    e.stopPropagation();
+    openHeaderMenu(e.currentTarget, [
+      { group: 'Conta' },
+      { icon: '👤', label: 'Meu perfil', onClick: () => showUserProfile() },
+      { icon: '🌓', label: 'Alternar tema', onClick: () => toggleTheme() },
+      { sep: true },
+      { icon: '⎋', label: 'Sair', danger: true, onClick: () => logout() }
+    ]);
+  };
 
   const openFin = plans.filter(p => ['pendente','ativo','recusado'].includes(p.status || 'pendente')).length;
   if (openFin > 0) {
@@ -1868,31 +1951,23 @@ async function showStudentHome() {
           <div class="stat-card"><div class="stat-value">${completed.length}</div><div class="stat-label">Rotinas concluídas</div></div>
           <div class="stat-card"><div class="stat-value">${openPlans.length}</div><div class="stat-label">Faturas abertas</div></div>
         </div>
-        <div class="page-title">Acesso rápido</div>
-        <div class="action-grid">
+        <div class="section-label">Acesso rápido</div>
+        <div class="action-grid compact">
           <div class="action-item" id="go-treinos"><div class="icon">🏋️</div><div class="label">Treinos</div></div>
+          <div class="action-item" id="go-hist"><div class="icon">📊</div><div class="label">Histórico</div></div>
           <div class="action-item" id="go-fin" style="${openPlans.length ? 'border:1.5px solid var(--danger);box-shadow:0 0 0 2px rgba(239,68,68,0.25)' : ''}">
             <div class="icon">${openPlans.length ? '🚨' : '💰'}</div>
-            <div class="label" style="${openPlans.length ? 'color:var(--danger);font-weight:700' : ''}">${openPlans.length ? `Faturas (${openPlans.length})` : 'Financeiro'}</div>
-          </div>
-          <div class="action-item" id="go-hist"><div class="icon">📊</div><div class="label">Histórico</div></div>
-          <div class="action-item" id="go-profile"><div class="icon">👤</div><div class="label">Meu perfil</div></div>
-          <div class="action-item" id="go-msgs">
-            <div class="icon">💬</div>
-            <div class="label">Chat</div>
+            <div class="label" style="${openPlans.length ? 'color:var(--danger);font-weight:700' : ''}">${openPlans.length ? `Faturas (${openPlans.length})` : 'Faturas'}</div>
           </div>
         </div>
+        <p class="text-muted" style="font-size:0.75rem;text-align:center;margin-top:8px">Chat, perfil e sair ficam no topo (💬 e ⋯)</p>
         <div class="page-title" style="margin-top:8px">Rotinas concluídas</div>
         <div id="home-recent"></div>
       `;
       $('#go-treinos').onclick = () => renderNav('treinos');
       $('#go-fin').onclick = () => renderNav('financeiro');
       $('#go-hist').onclick = () => renderNav('historico');
-      $('#go-profile')?.addEventListener('click', () => showUserProfile());
-      $('#go-msgs')?.addEventListener('click', () => {
-        showChat({ id: state.user.uid, name: state.profile.personalName || 'Personal' });
-      });
-      $('#student-photo')?.addEventListener('change', async (e) => {
+                  $('#student-photo')?.addEventListener('change', async (e) => {
         const f = e.target.files?.[0];
         if (!f) return;
         const url = await saveProfilePhoto(f);
@@ -3121,6 +3196,25 @@ async function showCompletedReport(completed, prevTonnage) {
       el('div', { html: setsHtml })
     ]));
   });
+}
+
+async function runPersonalCleanup() {
+  if (!(await confirmDialog('Remover respostas antigas e sessões locais expiradas?'))) return;
+  toast('Limpando dados expirados...', 'success');
+  try {
+    const n = await cleanupExpiredCoachReplies(state.user.uid);
+    Object.keys(localStorage).forEach(k => {
+      if (k.startsWith('workout_session_') || k.startsWith('workout_draft_')) {
+        try {
+          const s = JSON.parse(localStorage.getItem(k) || '{}');
+          if (s.startedAt && Date.now() - s.startedAt > 7 * 86400000) localStorage.removeItem(k);
+        } catch { localStorage.removeItem(k); }
+      }
+    });
+    toast(n ? `${n} resposta(s) antigas removidas` : 'Limpeza concluída', 'success');
+  } catch (e) {
+    toast(e.message || 'Erro na limpeza', 'error');
+  }
 }
 
 function toggleTheme() {

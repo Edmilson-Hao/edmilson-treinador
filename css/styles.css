@@ -967,3 +967,93 @@ details.card summary::after {
 }
 details.card[open] summary::after { content: ' ▴'; }
 .hist-seg .tab { flex: 1; text-align: center; }
+
+
+/* ---------- Header overflow menu ---------- */
+.header-menu-wrap { position: relative; }
+.header-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 220px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+  padding: 6px;
+  z-index: 200;
+  display: none;
+}
+.header-menu.open { display: block; }
+.header-menu button {
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.92rem;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.header-menu button:active,
+.header-menu button:hover { background: var(--elevated); }
+.header-menu .menu-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 8px;
+}
+.header-menu .menu-group-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 8px 14px 4px;
+  font-weight: 600;
+}
+
+/* Seções na home */
+.section-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 16px 0 8px;
+}
+.action-grid.compact { grid-template-columns: repeat(3, 1fr); gap: 10px; }
+@media (min-width: 420px) {
+  .action-grid.compact { grid-template-columns: repeat(4, 1fr); }
+}
+
+/* Biblioteca sub-tabs */
+.sub-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  background: var(--elevated);
+  padding: 4px;
+  border-radius: 12px;
+}
+.sub-tabs .sub-tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.85rem;
+  padding: 10px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.sub-tabs .sub-tab.active {
+  background: var(--card);
+  color: var(--accent);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+}
+
+/* Bottom nav 4 items more room */
+.bottom-nav.nav-4 .nav-item { flex: 1; font-size: 0.72rem; }
