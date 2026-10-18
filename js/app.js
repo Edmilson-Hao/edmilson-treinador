@@ -766,8 +766,14 @@ async function renderExercisesTab(content) {
     </div>
     ${listType === 'padrao' && !admin ? `<div class="card note" style="font-size:0.85rem;margin-bottom:12px">Lista padrão compartilhada. Apenas o administrador pode editar.</div>` : ''}
     ${(listType === 'personalizada' || admin) ? `<button class="btn btn-primary btn-block" id="btn-new-ex" style="margin-bottom:12px">+ Criar exercício ${listType==='padrao'?'(padrão)':'(meu)'}</button>` : ''}
-    <div class="form-group" style="margin-bottom:12px">
+    <div class="form-group" style="margin-bottom:8px">
       <input type="search" class="form-input" id="ex-search" placeholder="🔍 Buscar exercício ou músculo..." autocomplete="off">
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center">
+      <button type="button" class="btn btn-sm ${content.dataset.exNoVideo==='1'?'btn-primary':'btn-outline'}" id="btn-filter-novideo">
+        ${content.dataset.exNoVideo==='1' ? '🎬 Sem vídeo (ativo)' : '🎬 Filtrar sem vídeo'}
+      </button>
+      <span class="text-muted" style="font-size:0.75rem" id="ex-filter-count"></span>
     </div>
     <div id="ex-list"></div>
   `;
@@ -796,7 +802,10 @@ async function renderExercisesTab(content) {
         el('div', { style: 'flex:1' }, [
           el('div', { style: 'font-weight:600', text: ex.name }),
           el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: ex.muscleGroup || '' }),
-          el('div', { style: 'font-size:0.7rem;color:var(--muted);margin-top:2px', text: listType === 'padrao' ? 'Lista padrão' : 'Personalizada' })
+          el('div', { style: 'font-size:0.7rem;color:var(--muted);margin-top:2px', text: listType === 'padrao' ? 'Lista padrão' : 'Personalizada' }),
+          (!(ex.videoUrl || '').trim() && !(ex.gifUrl || '').trim())
+            ? el('div', { style: 'font-size:0.7rem;color:var(--danger);margin-top:2px', text: 'Sem vídeo' })
+            : null
         ]),
         canEdit ? el('div', { style: 'display:flex;gap:6px;flex-shrink:0' }, [
           el('button', { class: 'btn btn-sm btn-outline', text: 'Editar', onClick: () => showExerciseForm(ex, listType) }),
@@ -821,16 +830,37 @@ async function renderExercisesTab(content) {
     list.appendChild(card);
     });
   };
-  renderList(show);
+  /* filtered by applyFilters */
 
-  $('#ex-search')?.addEventListener('input', () => {
-    const q = ($('#ex-search').value || '').trim().toLowerCase();
-    if (!q) return renderList(show);
-    renderList(show.filter(ex =>
-      (ex.name || '').toLowerCase().includes(q) ||
-      (ex.muscleGroup || '').toLowerCase().includes(q)
-    ));
+  const hasMedia = (ex) => !!(String(ex.videoUrl || '').trim() || String(ex.gifUrl || '').trim());
+
+  const applyFilters = () => {
+    const q = ($('#ex-search')?.value || '').trim().toLowerCase();
+    const noVideo = content.dataset.exNoVideo === '1';
+    let items = show;
+    if (noVideo) items = items.filter(ex => !hasMedia(ex));
+    if (q) {
+      items = items.filter(ex =>
+        (ex.name || '').toLowerCase().includes(q) ||
+        (ex.muscleGroup || '').toLowerCase().includes(q)
+      );
+    }
+    const countEl = $('#ex-filter-count');
+    if (countEl) {
+      const missing = show.filter(ex => !hasMedia(ex)).length;
+      countEl.textContent = noVideo
+        ? `${items.length} sem vídeo`
+        : (missing ? `${missing} ainda sem vídeo` : 'Todos com mídia');
+    }
+    renderList(items);
+  };
+
+  $('#ex-search')?.addEventListener('input', applyFilters);
+  $('#btn-filter-novideo')?.addEventListener('click', () => {
+    content.dataset.exNoVideo = content.dataset.exNoVideo === '1' ? '0' : '1';
+    renderExercisesTab(content);
   });
+  applyFilters();
 }
 
 function showExerciseForm(ex = null, listType = 'personalizada') {
