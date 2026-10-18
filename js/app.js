@@ -4,7 +4,7 @@
 
 import { firebaseConfig, initAppCheckIfConfigured } from './firebase-config.js';
 import { initAuth, onAuthChange, loginWithGoogle, loginWithEmail, registerWithEmail, logout, createStudentAccount, completeGoogleRedirectIfAny } from './shared/auth.js';
-import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, getGlobalExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, updateRoutine, archiveRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, deleteWorkout, cloneRoutine, getWorkoutTemplates, createWorkoutTemplate, updateWorkoutTemplate, deleteWorkoutTemplate, copyWorkoutToStudent, cleanupExpiredCoachReplies, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, markCoachReplyRead, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan, sendChatMessage, getChatMessages, upsertReminder, getRemindersForStudent, getRemindersForPersonal } from './shared/db.js';
+import { initDb, getUser, createUser, updateUser, findPersonalByInviteCode, getStudentsOfPersonal, getPersonalStats, getExercises, getGlobalExercises, createExercise, updateExercise, deleteExercise, getRoutinesOfStudent, createRoutine, updateRoutine, archiveRoutine, getWorkoutsOfRoutine, createWorkout, updateWorkout, deleteWorkout, cloneRoutine, getRoutineTemplates, createRoutineTemplate, updateRoutineTemplate, deleteRoutineTemplate, importRoutineTemplate, saveRoutineAsTemplate, copyWorkoutToStudent, cleanupExpiredCoachReplies, saveCompletedWorkout, getCompletedByStudent, getFeedbacksForPersonal, resolveFeedback, markCoachReplyRead, createPlan, getPlansOfStudent, getPlansOfPersonal, markPlanPaid, studentClaimPaid, rejectPlanClaim, updatePlan, sendChatMessage, getChatMessages, upsertReminder, getRemindersForStudent, getRemindersForPersonal } from './shared/db.js';
 import { $, $$, el, toast, formatDate, formatDateTime, initials, videoToEmbed, driveToEmbed, mediaHtml, isGifUrl, confirmDialog, promptDialog, generateInviteCode, compressImageToBase64 } from './shared/utils.js';
 
 // Captura erros de rate-limit e mostra toast amigável
@@ -458,7 +458,7 @@ async function renderPersonalTab(tab, students, stats) {
         </div>
         <div class="action-item" id="act-templates">
           <div class="icon">📚</div>
-          <div class="label">Modelos treino</div>
+          <div class="label">Modelos rotina</div>
         </div>
         <div class="action-item" id="act-financeiro">
           <div class="icon">💰</div>
@@ -519,7 +519,7 @@ async function renderPersonalTab(tab, students, stats) {
     $('#act-exercises').onclick = () => goTab('exercicios');
     $('#act-feedbacks').onclick = () => goTab('feedbacks');
     $('#act-chat')?.addEventListener('click', () => showPersonalChatHub(students));
-    $('#act-templates')?.addEventListener('click', () => showWorkoutLibrary());
+    $('#act-templates')?.addEventListener('click', () => showRoutineLibrary());
     $('#act-students').onclick = () => goTab('alunos');
     $('#act-financeiro')?.addEventListener('click', () => goTab('financeiro'));
     $('#act-pix')?.addEventListener('click', () => showPixKeyModal());
@@ -894,10 +894,14 @@ function renderStudentTab(tab, student, routines, plans, completed) {
 
   if (tab === 'rotinas') {
     content.innerHTML = `
-      <button class="btn btn-primary btn-block" id="btn-new-routine" style="margin-bottom:16px">+ Criar rotina</button>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">
+        <button class="btn btn-primary" id="btn-new-routine" style="flex:1">+ Criar rotina</button>
+        <button class="btn btn-outline" id="btn-import-routine" style="flex:1">📥 Importar modelo</button>
+      </div>
       <div id="routines-list"></div>
     `;
     $('#btn-new-routine').onclick = () => showCreateRoutine(student);
+    $('#btn-import-routine').onclick = () => importRoutineToStudent(student);
 
     const list = $('#routines-list');
     if (routines.length === 0) {
@@ -1118,6 +1122,7 @@ async function showRoutineDetail(routine, student) {
       <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">
         <button class="btn btn-primary" id="btn-add-workout" style="flex:1">+ Treino</button>
         <button class="btn btn-outline" id="btn-clone-routine">Clonar</button>
+        <button class="btn btn-outline" id="btn-save-tpl">📚 Modelo</button>
         <button class="btn btn-outline" id="btn-archive-routine" style="color:var(--danger);border-color:var(--danger)">Arquivar</button>
       </div>
       <div id="workouts-list"></div>
@@ -1169,17 +1174,10 @@ async function showRoutineDetail(routine, student) {
         }),
         el('button', {
           class: 'btn btn-sm btn-outline',
-          text: 'Salvar como modelo',
+          text: 'Salvar treino no modelo…',
           onClick: async (e) => {
             e.stopPropagation();
-            const n = await promptDialog('Salvar como modelo', 'Nome', w.name);
-            if (n === null || !n.trim()) return;
-            await createWorkoutTemplate({
-              personalId: state.user.uid,
-              name: n.trim(),
-              exercises: JSON.parse(JSON.stringify(w.exercises || []))
-            });
-            toast('Modelo salvo na biblioteca', 'success');
+            toast('Use “Salvar rotina como modelo” no topo da rotina', 'info');
           }
         })
       ])
@@ -1606,11 +1604,17 @@ function showEditSets(ex, idx, workout, routine, student) {
       delete workout.exercises[idx].combinedMedia;
     }
     // Modelo de biblioteca (template) vs treino real
-    if (routine?.id === 'tpl') {
-      await updateWorkoutTemplate(workout.id, { exercises: workout.exercises });
+    if (routine?.id === 'routine-tpl' && workout._tpl) {
+      const tpl = workout._tpl;
+      const wi = workout._wi;
+      tpl.workouts[wi].exercises = workout.exercises;
+      await updateRoutineTemplate(tpl.id, { workouts: tpl.workouts });
       toast('Séries salvas no modelo', 'success');
       overlay.remove();
-      showTemplateEditor(workout);
+      showRoutineTplWorkoutExercises(tpl, wi);
+    } else if (routine?.id === 'tpl') {
+      // legado
+      overlay.remove();
     } else {
       await updateWorkout(workout.id, { exercises: workout.exercises });
       toast('Séries e técnica salvas', 'success');
@@ -3299,42 +3303,46 @@ async function showPersonalChatHub(studentsList = null) {
   };
 }
 
-async function showWorkoutLibrary() {
-  const templates = await getWorkoutTemplates(state.user.uid);
+async function showRoutineLibrary() {
+  const templates = await getRoutineTemplates(state.user.uid);
   const app = $('#app');
   app.innerHTML = `
     <header class="app-header">
       <button class="icon-btn" id="btn-back">←</button>
-      <div class="title" style="flex:1;text-align:center">Modelos de treino</div>
+      <div class="title" style="flex:1;text-align:center">Modelos de rotina</div>
       <div style="width:40px"></div>
     </header>
     <div class="page">
-      <p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">Crie treinos genéricos e atribua depois a qualquer aluno.</p>
-      <button class="btn btn-primary btn-block" id="btn-new-tpl" style="margin-bottom:16px">+ Novo modelo</button>
+      <p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">
+        Biblioteca de rotinas reutilizáveis. Importe depois em qualquer aluno.
+      </p>
+      <button class="btn btn-primary btn-block" id="btn-new-tpl" style="margin-bottom:16px">+ Novo modelo de rotina</button>
       <div id="tpl-list"></div>
     </div>
   `;
   $('#btn-back').onclick = () => showPersonalHome();
-  $('#btn-new-tpl').onclick = () => showCreateTemplate();
+  $('#btn-new-tpl').onclick = () => showCreateRoutineTemplate();
   const list = $('#tpl-list');
   if (!templates.length) {
-    list.innerHTML = `<div class="empty"><p>Nenhum modelo ainda</p></div>`;
+    list.innerHTML = `<div class="empty"><p>Nenhum modelo ainda. Crie um ou salve a rotina de um aluno como modelo.</p></div>`;
     return;
   }
   templates.forEach(tpl => {
+    const nW = (tpl.workouts || []).length;
+    const nEx = (tpl.workouts || []).reduce((a, w) => a + (w.exercises || []).length, 0);
     list.appendChild(el('div', { class: 'card' }, [
       el('div', { style: 'font-weight:700', text: tpl.name }),
-      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${(tpl.exercises||[]).length} exercícios` }),
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${nW} treino(s) · ${nEx} exercício(s)` }),
       el('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-top:10px' }, [
         el('button', {
           class: 'btn btn-sm btn-primary',
           text: 'Atribuir a aluno',
-          onClick: () => assignTemplateToStudent(tpl)
+          onClick: () => assignRoutineTemplateToStudent(tpl)
         }),
         el('button', {
           class: 'btn btn-sm btn-outline',
           text: 'Editar',
-          onClick: () => showTemplateEditor(tpl)
+          onClick: () => showRoutineTemplateEditor(tpl)
         }),
         el('button', {
           class: 'btn btn-sm btn-outline',
@@ -3342,9 +3350,9 @@ async function showWorkoutLibrary() {
           text: 'Excluir',
           onClick: async () => {
             if (!(await confirmDialog(`Excluir modelo "${tpl.name}"?`))) return;
-            await deleteWorkoutTemplate(tpl.id);
+            await deleteRoutineTemplate(tpl.id);
             toast('Modelo excluído', 'success');
-            showWorkoutLibrary();
+            showRoutineLibrary();
           }
         })
       ])
@@ -3352,22 +3360,21 @@ async function showWorkoutLibrary() {
   });
 }
 
-async function showCreateTemplate() {
-  const name = await promptDialog('Novo modelo de treino', 'Nome do treino', 'Upper A');
+async function showCreateRoutineTemplate() {
+  const name = await promptDialog('Novo modelo de rotina', 'Nome da rotina', 'Hipertrofia A');
   if (name === null) return;
   if (!name.trim()) return toast('Nome obrigatório', 'error');
-  const id = await createWorkoutTemplate({
+  const id = await createRoutineTemplate({
     personalId: state.user.uid,
     name: name.trim(),
-    exercises: []
+    workouts: []
   });
-  toast('Modelo criado — adicione exercícios', 'success');
-  const tpl = { id, personalId: state.user.uid, name: name.trim(), exercises: [] };
-  showTemplateEditor(tpl);
+  toast('Modelo criado — adicione treinos', 'success');
+  showRoutineTemplateEditor({ id, personalId: state.user.uid, name: name.trim(), workouts: [] });
 }
 
-async function showTemplateEditor(tpl) {
-  const allExercises = await getExercises(state.user.uid);
+async function showRoutineTemplateEditor(tpl) {
+  if (!tpl.workouts) tpl.workouts = [];
   const app = $('#app');
   app.innerHTML = `
     <header class="app-header">
@@ -3376,21 +3383,77 @@ async function showTemplateEditor(tpl) {
       <button class="icon-btn" id="btn-rename-tpl" title="Renomear">✎</button>
     </header>
     <div class="page">
-      <button class="btn btn-primary btn-block" id="btn-add-ex" style="margin-bottom:16px">+ Adicionar exercício</button>
-      <div id="tpl-exs"></div>
+      <p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">Cada item abaixo é um treino do modelo (ex.: Upper, Lower).</p>
+      <button class="btn btn-primary btn-block" id="btn-add-w" style="margin-bottom:16px">+ Treino no modelo</button>
+      <div id="tpl-workouts"></div>
       <button class="btn btn-outline btn-block" id="btn-assign" style="margin-top:16px">Atribuir a um aluno</button>
     </div>
   `;
-  $('#btn-back').onclick = () => showWorkoutLibrary();
+  $('#btn-back').onclick = () => showRoutineLibrary();
   $('#btn-rename-tpl').onclick = async () => {
     const n = await promptDialog('Renomear modelo', 'Nome', tpl.name);
     if (n === null || !n.trim()) return;
-    await updateWorkoutTemplate(tpl.id, { name: n.trim() });
+    await updateRoutineTemplate(tpl.id, { name: n.trim() });
     tpl.name = n.trim();
     toast('Renomeado', 'success');
-    showTemplateEditor(tpl);
+    showRoutineTemplateEditor(tpl);
   };
-  $('#btn-assign').onclick = () => assignTemplateToStudent(tpl);
+  $('#btn-assign').onclick = () => assignRoutineTemplateToStudent(tpl);
+  $('#btn-add-w').onclick = async () => {
+    const n = await promptDialog('Novo treino no modelo', 'Nome', 'Treino A');
+    if (n === null || !n.trim()) return;
+    tpl.workouts.push({ name: n.trim(), order: tpl.workouts.length, exercises: [] });
+    await updateRoutineTemplate(tpl.id, { workouts: tpl.workouts });
+    showRoutineTemplateEditor(tpl);
+  };
+  const list = $('#tpl-workouts');
+  if (!tpl.workouts.length) {
+    list.innerHTML = `<div class="empty"><p>Nenhum treino neste modelo</p></div>`;
+    return;
+  }
+  tpl.workouts.forEach((w, wi) => {
+    list.appendChild(el('div', { class: 'card' }, [
+      el('div', { style: 'font-weight:600', text: w.name }),
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${(w.exercises || []).length} exercícios` }),
+      el('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-top:8px' }, [
+        el('button', {
+          class: 'btn btn-sm btn-outline',
+          text: 'Exercícios',
+          onClick: () => showRoutineTplWorkoutExercises(tpl, wi)
+        }),
+        el('button', {
+          class: 'btn btn-sm btn-outline',
+          style: 'color:var(--danger)',
+          text: 'Remover',
+          onClick: async () => {
+            if (!(await confirmDialog('Remover este treino do modelo?'))) return;
+            tpl.workouts.splice(wi, 1);
+            await updateRoutineTemplate(tpl.id, { workouts: tpl.workouts });
+            showRoutineTemplateEditor(tpl);
+          }
+        })
+      ])
+    ]));
+  });
+}
+
+async function showRoutineTplWorkoutExercises(tpl, wi) {
+  const allExercises = await getExercises(state.user.uid);
+  const w = tpl.workouts[wi];
+  if (!w.exercises) w.exercises = [];
+  const app = $('#app');
+  app.innerHTML = `
+    <header class="app-header">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;text-align:center">${w.name}</div>
+      <div style="width:40px"></div>
+    </header>
+    <div class="page">
+      <button class="btn btn-primary btn-block" id="btn-add-ex" style="margin-bottom:16px">+ Exercício</button>
+      <div id="ex-list"></div>
+    </div>
+  `;
+  $('#btn-back').onclick = () => showRoutineTemplateEditor(tpl);
   $('#btn-add-ex').onclick = () => {
     if (!allExercises.length) return toast('Cadastre exercícios na biblioteca primeiro', 'error');
     const listHtml = allExercises.map(ex => `
@@ -3402,14 +3465,13 @@ async function showTemplateEditor(tpl) {
       </div>`).join('');
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay open';
-    overlay.innerHTML = `<div class="modal"><div class="modal-header"><div class="modal-title">Escolher exercício</div><button class="icon-btn" id="close-modal">✕</button></div><div style="max-height:60vh;overflow-y:auto">${listHtml}</div></div>`;
+    overlay.innerHTML = `<div class="modal"><div class="modal-header"><div class="modal-title">Exercício</div><button class="icon-btn" id="close-modal">✕</button></div><div style="max-height:60vh;overflow-y:auto">${listHtml}</div></div>`;
     document.body.appendChild(overlay);
     $('#close-modal').onclick = () => overlay.remove();
     overlay.querySelectorAll('.student-card').forEach(card => {
       card.onclick = async () => {
         const ex = allExercises.find(e => e.id === card.dataset.id);
-        if (!tpl.exercises) tpl.exercises = [];
-        tpl.exercises.push({
+        w.exercises.push({
           exerciseId: ex.id,
           name: ex.name,
           muscleGroup: ex.muscleGroup || '',
@@ -3419,32 +3481,29 @@ async function showTemplateEditor(tpl) {
           technique: 'normal',
           sets: [{ reps: '10', weight: '0', rest: '60' }]
         });
-        await updateWorkoutTemplate(tpl.id, { exercises: tpl.exercises });
+        await updateRoutineTemplate(tpl.id, { workouts: tpl.workouts });
         toast('Exercício adicionado', 'success');
         overlay.remove();
-        showTemplateEditor(tpl);
+        showRoutineTplWorkoutExercises(tpl, wi);
       };
     });
   };
-  const list = $('#tpl-exs');
-  if (!(tpl.exercises || []).length) {
+  const list = $('#ex-list');
+  if (!w.exercises.length) {
     list.innerHTML = `<div class="empty"><p>Nenhum exercício</p></div>`;
     return;
   }
-  tpl.exercises.forEach((ex, idx) => {
+  w.exercises.forEach((ex, idx) => {
     list.appendChild(el('div', { class: 'card' }, [
       el('div', { style: 'font-weight:600', text: ex.name }),
-      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${(ex.sets||[]).length} séries · ${ex.technique || 'normal'}` }),
+      el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${(ex.sets || []).length} séries · ${ex.technique || 'normal'}` }),
       el('div', { style: 'display:flex;gap:8px;margin-top:8px' }, [
         el('button', {
           class: 'btn btn-sm btn-outline',
           text: 'Séries',
           onClick: () => {
-            // reutiliza editor de séries com fake routine/student
-            const fakeW = { id: tpl.id, exercises: tpl.exercises, name: tpl.name };
-            showEditSets(ex, idx, fakeW, { id: 'tpl' }, { id: 'tpl' });
-            // monkey: after save, updateWorkout is called - need special path
-            // Override: patch updateWorkout calls for template - handled below by intercepting
+            const fakeW = { id: tpl.id, exercises: w.exercises, name: w.name, _tpl: tpl, _wi: wi };
+            showEditSets(ex, idx, fakeW, { id: 'routine-tpl' }, { id: 'tpl' });
           }
         }),
         el('button', {
@@ -3452,10 +3511,10 @@ async function showTemplateEditor(tpl) {
           style: 'color:var(--danger)',
           text: 'Remover',
           onClick: async () => {
-            if (!(await confirmDialog('Remover exercício do modelo?'))) return;
-            tpl.exercises.splice(idx, 1);
-            await updateWorkoutTemplate(tpl.id, { exercises: tpl.exercises });
-            showTemplateEditor(tpl);
+            if (!(await confirmDialog('Remover exercício?'))) return;
+            w.exercises.splice(idx, 1);
+            await updateRoutineTemplate(tpl.id, { workouts: tpl.workouts });
+            showRoutineTplWorkoutExercises(tpl, wi);
           }
         })
       ])
@@ -3463,9 +3522,7 @@ async function showTemplateEditor(tpl) {
   });
 }
 
-// Monkey-patch: when editing sets of a template, showEditSets calls updateWorkout
-// Better approach: save template sets in showEditSets if routine.id === 'tpl'
-async function assignTemplateToStudent(tpl) {
+async function assignRoutineTemplateToStudent(tpl) {
   const students = await getStudentsOfPersonal(state.user.uid);
   if (!students.length) return toast('Cadastre alunos primeiro', 'error');
   const options = {};
@@ -3473,12 +3530,12 @@ async function assignTemplateToStudent(tpl) {
   let studentId;
   if (typeof Swal !== 'undefined') {
     const r = await Swal.fire({
-      title: 'Atribuir a aluno',
+      title: 'Atribuir rotina a aluno',
       input: 'select',
       inputOptions: options,
-      inputPlaceholder: 'Selecione o aluno',
+      inputPlaceholder: 'Selecione',
       showCancelButton: true,
-      confirmButtonText: 'Continuar',
+      confirmButtonText: 'Importar',
       cancelButtonText: 'Cancelar',
       confirmButtonColor: '#f59e0b'
     });
@@ -3488,50 +3545,49 @@ async function assignTemplateToStudent(tpl) {
     studentId = students[0].id;
   }
   const student = students.find(s => s.id === studentId);
-  let routines = await getRoutinesOfStudent(studentId, { personalId: state.user.uid });
-  let routineId;
-  if (routines.length) {
-    const ropts = {};
-    routines.forEach(r => { ropts[r.id] = r.name; });
-    ropts['__new__'] = '+ Criar nova rotina';
-    if (typeof Swal !== 'undefined') {
-      const r = await Swal.fire({
-        title: 'Rotina de destino',
-        input: 'select',
-        inputOptions: ropts,
-        showCancelButton: true,
-        confirmButtonText: 'Atribuir',
-        cancelButtonText: 'Cancelar',
-        confirmButtonColor: '#f59e0b'
-      });
-      if (!r.isConfirmed) return;
-      routineId = r.value;
-    } else {
-      routineId = routines[0].id;
-    }
-  } else {
-    routineId = '__new__';
+  try {
+    await importRoutineTemplate(tpl, studentId, state.user.uid);
+    toast(`Rotina "${tpl.name}" importada para ${student.name}`, 'success');
+  } catch (e) {
+    toast(e.message || 'Erro ao importar', 'error');
   }
-  if (routineId === '__new__') {
-    const rn = await promptDialog('Nome da nova rotina', '', 'Rotina principal');
-    if (rn === null) return;
-    routineId = await createRoutine({
-      name: rn.trim() || 'Rotina',
-      personalId: state.user.uid,
-      studentId
-    });
+}
+
+async function importRoutineToStudent(student) {
+  const templates = await getRoutineTemplates(state.user.uid);
+  if (!templates.length) {
+    return toast('Nenhum modelo na biblioteca. Crie em “Modelos rotina” ou salve uma rotina como modelo.', 'error');
   }
-  await createWorkout({
-    routineId,
-    personalId: state.user.uid,
-    studentId,
-    name: tpl.name,
-    order: 0,
-    exercises: JSON.parse(JSON.stringify(tpl.exercises || [])),
-    startDate: firebase.firestore.Timestamp.now(),
-    endDate: null
+  const options = {};
+  templates.forEach(tpl => {
+    const nW = (tpl.workouts || []).length;
+    options[tpl.id] = `${tpl.name} (${nW} treino${nW === 1 ? '' : 's'})`;
   });
-  toast(`Treino "${tpl.name}" atribuído a ${student.name}`, 'success');
+  let tplId;
+  if (typeof Swal !== 'undefined') {
+    const r = await Swal.fire({
+      title: 'Importar modelo de rotina',
+      input: 'select',
+      inputOptions: options,
+      inputPlaceholder: 'Escolha o modelo',
+      showCancelButton: true,
+      confirmButtonText: 'Importar',
+      cancelButtonText: 'Cancelar',
+      confirmButtonColor: '#f59e0b'
+    });
+    if (!r.isConfirmed || !r.value) return;
+    tplId = r.value;
+  } else {
+    tplId = templates[0].id;
+  }
+  const tpl = templates.find(x => x.id === tplId);
+  try {
+    await importRoutineTemplate(tpl, student.id, state.user.uid);
+    toast(`Rotina "${tpl.name}" importada`, 'success');
+    showStudentDetail(student);
+  } catch (e) {
+    toast(e.message || 'Erro ao importar', 'error');
+  }
 }
 
 async function copyWorkoutBetweenStudents(workout, sourceStudent, sourceRoutine) {

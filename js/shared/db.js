@@ -225,33 +225,80 @@ export async function deleteWorkout(id) {
   await col('workouts').doc(id).delete();
 }
 
-// ---------- WORKOUT TEMPLATES (biblioteca) ----------
-export async function getWorkoutTemplates(personalId) {
-  guard('listTemplates', 8, 15000);
-  const snap = await col('workoutTemplates')
+// ---------- ROUTINE TEMPLATES (biblioteca de rotinas) ----------
+export async function getRoutineTemplates(personalId) {
+  guard('listRoutineTpl', 8, 15000);
+  const snap = await col('routineTemplates')
     .where('personalId', '==', personalId)
-    .limit(50)
+    .limit(40)
     .get();
   return sortBy(snap.docs.map(d => ({ id: d.id, ...d.data() })), 'name');
 }
 
-export async function createWorkoutTemplate(data) {
-  guard('createTemplate', 8, 20000);
-  const ref = await col('workoutTemplates').add({
+export async function createRoutineTemplate(data) {
+  guard('createRoutineTpl', 8, 20000);
+  const ref = await col('routineTemplates').add({
     ...data,
     createdAt: firebase.firestore.FieldValue.serverTimestamp()
   });
   return ref.id;
 }
 
-export async function updateWorkoutTemplate(id, data) {
-  guard('updateTemplate', 10, 15000);
-  await col('workoutTemplates').doc(id).update(data);
+export async function updateRoutineTemplate(id, data) {
+  guard('updateRoutineTpl', 10, 15000);
+  await col('routineTemplates').doc(id).update(data);
 }
 
-export async function deleteWorkoutTemplate(id) {
-  guard('deleteTemplate', 8, 20000);
-  await col('workoutTemplates').doc(id).delete();
+export async function deleteRoutineTemplate(id) {
+  guard('deleteRoutineTpl', 8, 20000);
+  await col('routineTemplates').doc(id).delete();
+}
+
+/** Importa modelo de rotina para um aluno (cria rotina + treinos) */
+export async function importRoutineTemplate(tpl, studentId, personalId) {
+  guard('importRoutineTpl', 3, 60000);
+  const routineId = await createRoutine({
+    name: tpl.name || 'Rotina',
+    personalId,
+    studentId,
+    type: tpl.type || '',
+    level: tpl.level || '',
+    startDate: firebase.firestore.Timestamp.now(),
+    endDate: null
+  });
+  const workouts = tpl.workouts || [];
+  for (let i = 0; i < workouts.length; i++) {
+    const w = workouts[i];
+    await createWorkout({
+      routineId,
+      personalId,
+      studentId,
+      name: w.name || `Treino ${i + 1}`,
+      order: w.order != null ? w.order : i,
+      exercises: JSON.parse(JSON.stringify(w.exercises || [])),
+      startDate: w.startDate || null,
+      endDate: w.endDate || null
+    });
+  }
+  return routineId;
+}
+
+/** Salva rotina existente do aluno como modelo na biblioteca */
+export async function saveRoutineAsTemplate(routine, workouts, personalId, nameOverride = null) {
+  guard('saveRoutineTpl', 4, 30000);
+  return createRoutineTemplate({
+    personalId,
+    name: nameOverride || routine.name || 'Modelo',
+    type: routine.type || '',
+    level: routine.level || '',
+    workouts: (workouts || []).map((w, i) => ({
+      name: w.name,
+      order: w.order != null ? w.order : i,
+      exercises: JSON.parse(JSON.stringify(w.exercises || [])),
+      startDate: null,
+      endDate: null
+    }))
+  });
 }
 
 /** Copia treino (exercícios) para rotina de outro aluno */
