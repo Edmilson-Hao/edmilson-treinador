@@ -2155,18 +2155,50 @@ function tonnageColor(current, previous) {
 }
 
 function renderStudentHistory(main, completed, onOpen) {
-  // completed: newest first
+  // completed: newest first — tela unificada com segmentos
   let period = main.dataset.period || 'mes';
-
   let workoutFilter = main.dataset.workoutFilter || '';
   let muscleFilter = main.dataset.muscleFilter || '';
+  let histTab = main.dataset.histTab || 'treinos'; // treinos | progressao | respostas
 
   const workoutNames = [...new Set(completed.map(c => c.workoutName).filter(Boolean))].sort();
   const muscles = [...new Set(completed.flatMap(c =>
     (c.exercisesPerformed || []).map(e => e.muscleGroup).filter(Boolean)
   ))].sort();
+  const unreadN = unreadCoachReplies(completed).length;
 
-  const apply = () => {
+  const shell = () => {
+    main.innerHTML = `
+      <div class="page-title" style="margin-bottom:8px">Histórico</div>
+      <div class="tabs hist-seg" id="hist-seg" style="margin-bottom:14px">
+        <button class="tab ${histTab==='treinos'?'active':''}" data-ht="treinos">Treinos</button>
+        <button class="tab ${histTab==='progressao'?'active':''}" data-ht="progressao">Progressão</button>
+        <button class="tab ${histTab==='respostas'?'active':''}" data-ht="respostas">
+          Respostas${unreadN ? ` <span class="badge" style="background:var(--accent);color:#0f172a;margin-left:4px">${unreadN}</span>` : ''}
+        </button>
+      </div>
+      <div id="hist-body"></div>
+    `;
+    main.dataset.period = period;
+    main.dataset.workoutFilter = workoutFilter;
+    main.dataset.muscleFilter = muscleFilter;
+    main.dataset.histTab = histTab;
+
+    $$('#hist-seg .tab').forEach(btn => {
+      btn.onclick = () => {
+        histTab = btn.dataset.ht;
+        main.dataset.histTab = histTab;
+        shell();
+      };
+    });
+
+    const body = $('#hist-body');
+    if (histTab === 'treinos') renderHistTreinos(body);
+    else if (histTab === 'progressao') renderHistProgressao(body);
+    else renderHistRespostas(body);
+  };
+
+  const renderHistTreinos = (body) => {
     let filtered = filterByPeriod(completed, period);
     if (workoutFilter) filtered = filtered.filter(c => c.workoutName === workoutFilter);
     if (muscleFilter) {
@@ -2177,73 +2209,71 @@ function renderStudentHistory(main, completed, onOpen) {
     const metricsList = filtered.map(c => ({ c, m: calcWorkoutMetrics(c) }));
     const chrono = [...metricsList].reverse();
 
-    main.innerHTML = `
-      <div class="page-title">Histórico</div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-        <button class="btn btn-sm btn-outline" id="btn-prog">📈 Progressão por exercício</button>
-        <button class="btn btn-sm btn-outline" id="btn-fb-replies">💬 Respostas do personal</button>
-      </div>
-      <div class="tabs" id="period-tabs" style="margin-bottom:12px">
+    body.innerHTML = `
+      <div class="tabs" id="period-tabs" style="margin-bottom:10px">
         ${['semana','mes','semestre','ano'].map(p =>
           `<button class="tab ${period===p?'active':''}" data-p="${p}">${p[0].toUpperCase()+p.slice(1)}</button>`
         ).join('')}
       </div>
-      <div class="card" style="margin-bottom:12px">
-        <div class="form-group" style="margin-bottom:10px">
-          <label class="form-label">Filtrar por treino</label>
-          <select class="form-select" id="filter-workout">
-            <option value="">Todos os treinos</option>
-            ${workoutNames.map(n => `<option value="${n}" ${workoutFilter===n?'selected':''}>${n}</option>`).join('')}
-          </select>
+      <details class="card" style="margin-bottom:12px;padding:10px 12px">
+        <summary style="cursor:pointer;font-weight:600;font-size:0.9rem;color:var(--muted)">Filtros</summary>
+        <div style="margin-top:10px">
+          <div class="form-group" style="margin-bottom:10px">
+            <label class="form-label">Treino</label>
+            <select class="form-select" id="filter-workout">
+              <option value="">Todos</option>
+              ${workoutNames.map(n => `<option value="${n}" ${workoutFilter===n?'selected':''}>${n}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Músculo</label>
+            <select class="form-select" id="filter-muscle">
+              <option value="">Todos</option>
+              ${muscles.map(n => `<option value="${n}" ${muscleFilter===n?'selected':''}>${n}</option>`).join('')}
+            </select>
+          </div>
         </div>
-        <div class="form-group" style="margin-bottom:0">
-          <label class="form-label">Filtrar por músculo</label>
-          <select class="form-select" id="filter-muscle">
-            <option value="">Todos os músculos</option>
-            ${muscles.map(n => `<option value="${n}" ${muscleFilter===n?'selected':''}>${n}</option>`).join('')}
-          </select>
-        </div>
-      </div>
-      <div class="card" id="chart-box"></div>
-      <div class="page-title" style="margin-top:16px">Treinos</div>
+      </details>
+      <div class="card" id="chart-box" style="margin-bottom:12px"></div>
       <div id="student-history"></div>
     `;
-    main.dataset.period = period;
-    main.dataset.workoutFilter = workoutFilter;
-    main.dataset.muscleFilter = muscleFilter;
 
-    $$('#period-tabs .tab').forEach(t => {
-      t.onclick = () => { period = t.dataset.p; main.dataset.period = period; apply(); };
+    $$('#period-tabs .tab').forEach(tb => {
+      tb.onclick = () => { period = tb.dataset.p; main.dataset.period = period; shell(); };
     });
-    $('#filter-workout').onchange = () => { workoutFilter = $('#filter-workout').value; apply(); };
-    $('#filter-muscle').onchange = () => { muscleFilter = $('#filter-muscle').value; apply(); };
-    $('#btn-prog')?.addEventListener('click', () => showExerciseProgression(completed));
-    $('#btn-fb-replies')?.addEventListener('click', () => renderStudentMessages(main, completed));
+    $('#filter-workout').onchange = () => { workoutFilter = $('#filter-workout').value; shell(); };
+    $('#filter-muscle').onchange = () => { muscleFilter = $('#filter-muscle').value; shell(); };
 
     renderTonnageChart($('#chart-box'), chrono.map(x => x.c));
 
     const hList = $('#student-history');
     if (!metricsList.length) {
-      hList.innerHTML = `<p class="text-muted">Nenhum treino neste período</p>`;
+      hList.innerHTML = `<div class="empty"><p>Nenhum treino neste período</p></div>`;
       return;
     }
 
-    // previous tonnage in chronological order for color
     const tonById = {};
     chrono.forEach((x, i) => {
-      const prev = i > 0 ? chrono[i - 1].m.tonnage : null;
-      tonById[x.c.id] = { ton: x.m.tonnage, prev };
+      tonById[x.c.id] = { ton: x.m.tonnage, prev: i > 0 ? chrono[i - 1].m.tonnage : null };
     });
 
     metricsList.forEach(({ c, m }) => {
       const { ton, prev } = tonById[c.id] || { ton: m.tonnage, prev: null };
       const color = tonnageColor(ton, prev);
+      const hasReply = !!c.coachReply;
       hList.appendChild(el('div', {
         class: 'card',
         style: 'cursor:pointer',
         onClick: () => (onOpen ? onOpen(c, prev) : showStudentCompletedDetail(c, null, prev))
       }, [
-        el('div', { style: 'font-weight:600', text: c.workoutName || 'Treino' }),
+        el('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:8px' }, [
+          el('div', { style: 'font-weight:600', text: c.workoutName || 'Treino' }),
+          hasReply ? el('span', {
+            class: 'badge',
+            style: `background:${c.coachReplyRead ? 'var(--elevated)' : 'var(--accent)'};color:${c.coachReplyRead ? 'var(--muted)' : '#0f172a'};font-size:0.7rem`,
+            text: c.coachReplyRead ? '💬' : '💬 nova'
+          }) : null
+        ]),
         el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) }),
         el('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:0.85rem' }, [
           el('span', { class: 'badge badge-muted', text: `${m.totalSets} séries` }),
@@ -2253,13 +2283,118 @@ function renderStudentHistory(main, completed, onOpen) {
             text: `${m.tonnage} kg·rep`
           }),
           c.intensity ? el('span', { class: 'badge badge-muted', text: c.intensity }) : null
-        ]),
-        el('div', { style: 'font-size:0.8rem;color:var(--accent);margin-top:6px', text: 'Ver detalhe ›' })
+        ])
       ]));
     });
   };
 
-  apply();
+  const renderHistProgressao = (body) => {
+    const names = [...new Set(completed.flatMap(c =>
+      (c.exercisesPerformed || []).map(e => e.name)
+    ).filter(Boolean))].sort();
+    body.innerHTML = `
+      <p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">Acompanhe a carga de um exercício ao longo do tempo.</p>
+      <div class="form-group">
+        <label class="form-label">Exercício</label>
+        <select class="form-select" id="prog-ex">
+          <option value="">Selecione um exercício...</option>
+          ${names.map(n => `<option value="${n}">${n}</option>`).join('')}
+        </select>
+      </div>
+      <div id="prog-chart" class="card" style="display:none;margin-bottom:12px"></div>
+      <div id="prog-list"></div>
+    `;
+    if (!names.length) {
+      body.innerHTML = `<div class="empty"><p>Conclua treinos para ver progressão</p></div>`;
+      return;
+    }
+    $('#prog-ex').onchange = () => {
+      const name = $('#prog-ex').value;
+      const box = $('#prog-chart');
+      const list = $('#prog-list');
+      if (!name) {
+        box.style.display = 'none';
+        list.innerHTML = '';
+        return;
+      }
+      const pts = buildExerciseProgression(completed, name);
+      if (!pts.length) {
+        box.style.display = 'block';
+        box.innerHTML = '<p class="text-muted" style="margin:0">Sem dados de carga para este exercício</p>';
+        list.innerHTML = '';
+        return;
+      }
+      const vals = pts.map(p => p.max);
+      const w = 320, h = 100, pad = 20;
+      const maxV = Math.max(...vals, 1);
+      const line = vals.map((v, i) => {
+        const x = pad + (i / Math.max(vals.length - 1, 1)) * (w - pad * 2);
+        const y = h - pad - (v / maxV) * (h - pad * 2);
+        return `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+      box.style.display = 'block';
+      box.innerHTML = `
+        <div style="font-size:0.8rem;color:var(--muted);margin-bottom:6px">Carga máxima (kg)</div>
+        <svg viewBox="0 0 ${w} ${h}" width="100%" height="100">
+          <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
+        </svg>
+        <div style="display:flex;justify-content:space-between;font-size:0.8rem;margin-top:4px">
+          <span>Início: <strong>${vals[0]} kg</strong></span>
+          <span style="color:${vals[vals.length-1] > vals[0] ? 'var(--success)' : 'var(--text)'}">Agora: <strong>${vals[vals.length-1]} kg</strong></span>
+        </div>`;
+      list.innerHTML = '';
+      [...pts].reverse().forEach(p => {
+        list.appendChild(el('div', { class: 'card' }, [
+          el('div', { style: 'font-weight:600', text: `${p.max} kg · média ${p.avg}` }),
+          el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: `${formatDateTime(p.date)} · ${p.workoutName || ''}` })
+        ]));
+      });
+    };
+  };
+
+  const renderHistRespostas = (body) => {
+    const unread = unreadCoachReplies(completed);
+    const read = completed.filter(c => c.coachReply && c.coachReplyRead);
+    const msgs = [...unread, ...read];
+    body.innerHTML = `
+      <p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">
+        Respostas do personal aos seus feedbacks de treino.
+        ${unread.length ? `<strong style="color:var(--accent)"> · ${unread.length} nova(s)</strong>` : ''}
+      </p>
+      <div id="msg-list"></div>
+    `;
+    const list = $('#msg-list');
+    if (!msgs.length) {
+      list.innerHTML = `<div class="empty"><p>Nenhuma resposta ainda</p></div>`;
+      return;
+    }
+    msgs.forEach(c => {
+      const isUnread = !c.coachReplyRead;
+      list.appendChild(el('div', {
+        class: 'card',
+        style: `cursor:pointer;${isUnread ? 'border:1.5px solid var(--accent)' : ''}`,
+        onClick: async () => {
+          if (isUnread) {
+            try {
+              await markCoachReplyRead(c.id);
+              c.coachReplyRead = true;
+            } catch (e) { console.warn(e); }
+          }
+          showStudentCompletedDetail(c, null, null);
+        }
+      }, [
+        el('div', { style: 'display:flex;justify-content:space-between;gap:8px;align-items:center' }, [
+          el('div', { style: 'font-weight:700', text: c.workoutName || 'Treino' }),
+          isUnread ? el('span', { class: 'badge', style: 'background:var(--accent);color:#0f172a', text: 'Nova' }) : null
+        ]),
+        el('div', { class: 'text-muted', style: 'font-size:0.8rem', text: formatDateTime(c.finishedAt) }),
+        el('div', { class: 'card note note-accent', style: 'margin-top:10px;margin-bottom:0', html: `<strong>Personal:</strong> ${c.coachReply}` }),
+        c.feedback ? el('div', { class: 'text-muted', style: 'font-size:0.85rem;margin-top:8px', text: `Seu feedback: ${c.feedback}` }) : null
+      ]));
+    });
+  };
+
+  shell();
 }
 
 function showStudentCompletedDetail(completed, _ma, prevTonnage) {

@@ -651,21 +651,49 @@ body {
   color: var(--muted);
 }
 
-/* ---------- Exercise video embed ---------- */
+/* ---------- Exercise video / GIF embed ---------- */
 .video-wrap {
   position: relative;
   width: 100%;
-  aspect-ratio: 16/9;
   background: #000;
   border-radius: var(--radius-sm);
   overflow: hidden;
   margin: 10px 0;
+  /* landscape padrão (YouTube/Drive) */
+  aspect-ratio: 16 / 9;
 }
 
 .video-wrap iframe {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   border: none;
+}
+
+/* GIF / imagem: usa largura total e altura natural (sem faixas laterais forçadas) */
+.video-wrap.video-wrap--media {
+  aspect-ratio: auto;
+  height: auto;
+  max-height: 75vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.video-wrap.video-wrap--media img {
+  width: 100%;
+  height: auto;
+  max-height: 75vh;
+  object-fit: contain;
+  display: block;
+  vertical-align: middle;
+}
+
+/* Vídeo landscape embutido ocupando 100% da largura útil */
+.video-wrap.video-wrap--wide {
+  aspect-ratio: 16 / 9;
+  width: 100%;
 }
 
 /* ---------- Progress dots (frequência) ---------- */
@@ -925,3 +953,17 @@ body {
 [data-theme="light"] .app-header { background: #fff; border-bottom-color: var(--border); }
 [data-theme="light"] .bottom-nav { background: #fff; }
 [data-theme="light"] .toast { background: #fff; color: #0f172a; }
+
+
+/* Histórico — filtros colapsáveis */
+details.card summary {
+  list-style: none;
+}
+details.card summary::-webkit-details-marker { display: none; }
+details.card summary::after {
+  content: ' ▾';
+  color: var(--muted);
+  font-size: 0.85em;
+}
+details.card[open] summary::after { content: ' ▴'; }
+.hist-seg .tab { flex: 1; text-align: center; }
