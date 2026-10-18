@@ -2580,9 +2580,11 @@ async function showStudentWorkout(workout, routine) {
     started: false,
     startedAt: null,
     done: {},
+    setDone: {},
     performed: null,
     restEndsAt: null,
-    restExIdx: null
+    restExIdx: null,
+    focusIdx: 0
   };
   try {
     session = { ...session, ...JSON.parse(localStorage.getItem(storageKey) || '{}') };
@@ -2623,6 +2625,9 @@ async function showStudentWorkout(workout, routine) {
     }));
   }
   const doneMap = session.done || {};
+  if (!session.setDone) session.setDone = {};
+  if (session.focusIdx == null || session.focusIdx < 0) session.focusIdx = 0;
+  if (session.focusIdx >= performed.length) session.focusIdx = Math.max(0, performed.length - 1);
 
   const persist = () => {
     session.done = doneMap;
@@ -2632,45 +2637,156 @@ async function showStudentWorkout(workout, routine) {
   const clearSession = () => localStorage.removeItem(storageKey);
 
   let timerInterval = null;
+  let restInterval = null;
   const stopTimers = () => {
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    if (restInterval) { clearInterval(restInterval); restInterval = null; }
   };
 
   const fmtElapsed = (ms) => {
-    const s = Math.floor(ms / 1000);
+    const s = Math.max(0, Math.floor(ms / 1000));
     const h = Math.floor(s / 3600);
     const m = Math.floor((s % 3600) / 60);
     const sec = s % 60;
-    if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
-    return `${m}:${String(sec).padStart(2,'0')}`;
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+    return `${m}:${String(sec).padStart(2, '0')}`;
+  };
+
+  const firstIncomplete = () => {
+    for (let i = 0; i < performed.length; i++) {
+      if (!doneMap[i]) return i;
+    }
+    return performed.length - 1;
+  };
+
+  const techniqueHint = (ex) => {
+    if (!ex.technique || ex.technique === 'normal') return '';
+    if (ex.technique === 'drop') return '📉 <strong>Drop set:</strong> série principal e depois reduza a carga nos drops.';
+    if (ex.technique === 'rest_pause') return '⏱ <strong>Rest-pause:</strong> perto da falha, pause e complete as mini-séries.';
+    if (ex.technique === 'cluster') return '🔹 <strong>Cluster:</strong> reps em blocos com pausa curta.';
+    if (ex.technique === 'combined') return `🔗 <strong>Combinado:</strong> alterne com <em>${ex.combinedName || 'o 2º exercício'}</em>.`;
+    return '';
   };
 
   const render = () => {
     stopTimers();
     const doneCount = Object.values(doneMap).filter(Boolean).length;
+    const total = performed.length || 1;
     const started = !!session.started;
+    const allDone = doneCount >= performed.length && performed.length > 0;
+    const pct = Math.round((doneCount / total) * 100);
+    const focusIdx = Math.min(session.focusIdx || 0, Math.max(0, performed.length - 1));
+    const focus = performed[focusIdx];
+    const restSec = focus
+      ? (Number(focus.restSeconds) || Number(focus.sets?.[0]?.rest) || 60)
+      : 60;
+    const resting = started && session.restEndsAt && session.restEndsAt > Date.now();
 
+    // ---------- ANTES DE INICIAR ----------
+    if (!started) {
+      app.innerHTML = `
+        <header class="app-header">
+          <button class="icon-btn" id="btn-back" title="Voltar">←</button>
+          <div class="title" style="flex:1;text-align:center">${workout.name}</div>
+          <div style="width:40px"></div>
+        </header>
+        <div class="page" style="padding-bottom:100px">
+          <div class="card note" style="font-size:0.9rem;margin-bottom:14px">
+            Revise os exercícios e toque em <strong>Iniciar treino</strong> quando estiver pronto.
+          </div>
+          <div class="section-label">${performed.length} exercício(s)</div>
+          <div id="preview-list"></div>
+          <div class="wo-sticky-footer">
+            <button class="btn btn-primary btn-block" id="btn-start" style="font-size:1.05rem;padding:14px">Iniciar treino</button>
+          </div>
+        </div>
+      `;
+      $('#btn-back').onclick = () => showStudentHome();
+      const pl = $('#preview-list');
+      performed.forEach((ex, idx) => {
+        const summary = (ex.sets || []).map(s => `${s.reps}×${s.weight || 0}kg`).join(' · ');
+        pl.appendChild(el('div', { class: 'card', style: 'margin-bottom:8px' }, [
+          el('div', { style: 'font-weight:600', text: `${idx + 1}. ${ex.name}${ex.combinedName ? ' + ' + ex.combinedName : ''}` }),
+          el('div', {
+            class: 'text-muted',
+            style: 'font-size:0.8rem;margin-top:4px',
+            html: `${(ex.sets || []).length} séries · ${summary || '—'} · descanso ${Number(ex.restSeconds) || 60}s ${techniqueBadge(ex.technique)}`
+          })
+        ]));
+      });
+      $('#btn-start').onclick = () => {
+        session.started = true;
+        session.startedAt = Date.now();
+        session.focusIdx = firstIncomplete();
+        persist();
+        render();
+      };
+      return;
+    }
+
+    // ---------- TREINO EM ANDAMENTO ----------
     app.innerHTML = `
-      <header class="app-header">
+      <header class="app-header wo-header">
+        <button class="icon-btn" id="btn-back" title="Voltar">←</button>
+        <div style="flex:1;text-align:center;min-width:0">
+          <div class="title" style="font-size:0.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${workout.name}</div>
+          <div id="elapsed-val" style="font-size:0.8rem;color:var(--accent);font-variant-numeric:tabular-nums;font-weight:600">⏱ 0:00</div>
+        </div>
         <button class="icon-btn" id="btn-home" title="Início">🏠</button>
-        <div class="title" style="flex:1;text-align:center">${workout.name}</div>
-        <button class="icon-btn" id="btn-back">←</button>
       </header>
-      <div class="page" style="padding-bottom:100px">
-        ${started ? `<div id="session-timer" style="text-align:center;font-size:0.85rem;color:var(--muted);margin-bottom:8px;font-variant-numeric:tabular-nums">⏱ <span id="elapsed-val">0:00</span></div>` : ''}
-        <div class="card note" style="font-size:0.85rem">
-          ${started
-            ? 'Treino em andamento. Toque no exercício para expandir. Ajuste reps/kg e use o descanso.'
-            : 'Revise os exercícios e toque em <strong>Iniciar treino</strong> quando estiver pronto.'}
+
+      <div class="wo-progress-bar">
+        <div class="wo-progress-fill" style="width:${pct}%"></div>
+      </div>
+      <div class="wo-progress-label">${doneCount} de ${performed.length} exercícios · ${pct}%</div>
+
+      <div class="page wo-page" style="padding-bottom:120px">
+        ${focus ? `
+        <div class="section-label" style="margin-top:4px">Em foco</div>
+        <div class="card wo-focus-card" id="focus-card">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px">
+            <div>
+              <div style="font-weight:700;font-size:1.15rem">${focus.name}${focus.combinedName ? ' + ' + focus.combinedName : ''}</div>
+              <div style="margin-top:4px">${techniqueBadge(focus.technique)}</div>
+            </div>
+            ${doneMap[focusIdx] ? '<span class="badge" style="background:var(--success);color:#fff">Concluído</span>' : ''}
+          </div>
+          ${(focus.gifUrl || focus.videoUrl) ? mediaHtml(focus.gifUrl || focus.videoUrl) : ''}
+          ${focus.combinedMedia ? mediaHtml(focus.combinedMedia) : ''}
+          ${techniqueHint(focus) ? `<div class="card note" style="font-size:0.8rem;margin:8px 0">${techniqueHint(focus)}</div>` : ''}
+
+          <div class="form-group" style="margin-top:10px;margin-bottom:8px">
+            <label class="form-label">Dificuldade</label>
+            <div class="diff-row">
+              <button type="button" class="btn btn-sm ${focus.difficulty==='facil'?'btn-primary':'btn-outline'} diff-btn" data-d="facil">Fácil</button>
+              <button type="button" class="btn btn-sm ${focus.difficulty==='moderado'?'btn-primary':'btn-outline'} diff-btn" data-d="moderado">Moderado</button>
+              <button type="button" class="btn btn-sm ${focus.difficulty==='intenso'?'btn-primary':'btn-outline'} diff-btn" data-d="intenso">Intenso</button>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px;margin-bottom:6px;padding-left:4px;font-size:0.75rem;color:var(--muted);font-weight:600">
+            <div style="width:36px"></div>
+            <div style="flex:1">Reps</div>
+            <div style="flex:1">Kg</div>
+            <div style="width:40px;text-align:center">Ok</div>
+          </div>
+          <div id="focus-sets"></div>
+
+          <button type="button" class="btn btn-outline btn-block" id="btn-rest" style="margin-top:12px">⏱ Iniciar descanso (${restSec}s)</button>
+          <button type="button" class="btn btn-block ${doneMap[focusIdx] ? 'btn-outline' : 'btn-success'}" id="btn-toggle-done" style="margin-top:8px">
+            ${doneMap[focusIdx] ? '↩ Refazer exercício' : '✓ Concluir exercício'}
+          </button>
         </div>
-        <div style="font-size:0.85rem;color:var(--muted);margin-bottom:12px">
-          ${doneCount} de ${performed.length} exercícios concluídos
-        </div>
-        <div id="workout-exs"></div>
-        <div class="card" style="margin-top:20px">
-          ${started ? `
+        ` : ''}
+
+        <div class="section-label">Lista do treino</div>
+        <div id="wo-queue"></div>
+
+        ${allDone ? `
+        <div class="card" style="margin-top:16px;border:1.5px solid var(--accent)">
+          <div style="font-weight:700;margin-bottom:8px">Tudo feito! 💪</div>
           <div class="form-group">
-            <label class="form-label">Como foi o treino no geral?</label>
+            <label class="form-label">Como foi o treino?</label>
             <select class="form-select" id="intensity">
               <option value="leve">Leve</option>
               <option value="moderada" selected>Moderada</option>
@@ -2678,222 +2794,193 @@ async function showStudentWorkout(workout, routine) {
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label">Feedback geral (opcional)</label>
+            <label class="form-label">Feedback (opcional)</label>
             <textarea class="form-textarea" id="feedback" placeholder="Como se sentiu, dores, dúvidas..."></textarea>
           </div>
-          <button class="btn btn-success btn-block" id="btn-finish">Finalizar treino</button>
-          <button class="btn btn-outline btn-block" id="btn-cancel" style="margin-top:10px;color:var(--danger);border-color:var(--danger)">Cancelar treino</button>
-          ` : `
-          <button class="btn btn-primary btn-block" id="btn-start">Iniciar treino</button>
-          `}
+          <button class="btn btn-success btn-block" id="btn-finish" style="font-size:1.05rem;padding:14px">Finalizar treino</button>
+        </div>
+        ` : `
+        <details class="card" style="margin-top:16px;padding:10px 12px">
+          <summary style="cursor:pointer;font-weight:600;color:var(--muted);font-size:0.9rem">Finalizar / cancelar</summary>
+          <div style="margin-top:12px">
+            <div class="form-group">
+              <label class="form-label">Como foi o treino?</label>
+              <select class="form-select" id="intensity">
+                <option value="leve">Leve</option>
+                <option value="moderada" selected>Moderada</option>
+                <option value="intensa">Intensa</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Feedback (opcional)</label>
+              <textarea class="form-textarea" id="feedback" placeholder="Como se sentiu..."></textarea>
+            </div>
+            <button class="btn btn-success btn-block" id="btn-finish">Finalizar treino</button>
+            <button class="btn btn-outline btn-block" id="btn-cancel" style="margin-top:8px;color:var(--danger);border-color:var(--danger)">Cancelar treino</button>
+          </div>
+        </details>
+        `}
+      </div>
+
+      ${resting ? `
+      <div class="wo-rest-overlay" id="rest-overlay">
+        <div class="wo-rest-panel">
+          <div style="font-size:0.85rem;color:var(--muted);margin-bottom:8px">Descanso</div>
+          <div id="rest-big" style="font-size:3.2rem;font-weight:800;color:var(--accent);font-variant-numeric:tabular-nums">0:00</div>
+          <button class="btn btn-outline" id="btn-skip-rest" style="margin-top:16px">Pular descanso</button>
         </div>
       </div>
+      ` : ''}
     `;
 
-    $('#btn-home').onclick = () => { stopTimers(); showStudentHome(); };
     $('#btn-back').onclick = () => { stopTimers(); showStudentHome(); };
+    $('#btn-home').onclick = () => { stopTimers(); showStudentHome(); };
 
-    if (started && session.startedAt) {
+    // Timer de sessão no header
+    if (session.startedAt) {
       const tick = () => {
         const el = $('#elapsed-val');
-        if (!el) return;
-        el.textContent = fmtElapsed(Date.now() - session.startedAt);
+        if (el) el.textContent = '⏱ ' + fmtElapsed(Date.now() - session.startedAt);
       };
       tick();
       timerInterval = setInterval(tick, 1000);
     }
 
-    const list = $('#workout-exs');
-    performed.forEach((ex, idx) => {
-      const isDone = !!doneMap[idx];
-      const restSec = Number(ex.restSeconds) || Number(ex.sets?.[0]?.rest) || 60;
-      const summarySets = (ex.sets || []).map(s => `${s.reps}×${s.weight || 0}kg`).join(' · ');
-      const card = el('div', {
-        class: 'card',
-        id: `ex-card-${idx}`,
-        style: isDone ? 'border-color:var(--success)' : ''
+    // Overlay de descanso
+    if (resting) {
+      const tickRest = () => {
+        const left = Math.max(0, session.restEndsAt - Date.now());
+        const el = $('#rest-big');
+        if (el) el.textContent = fmtElapsed(left);
+        if (left <= 0) {
+          session.restEndsAt = null;
+          session.restExIdx = null;
+          persist();
+          if (restInterval) { clearInterval(restInterval); restInterval = null; }
+          toast('Descanso acabou — próxima série!', 'success');
+          render();
+        }
+      };
+      tickRest();
+      restInterval = setInterval(tickRest, 250);
+      $('#btn-skip-rest')?.addEventListener('click', () => {
+        session.restEndsAt = null;
+        session.restExIdx = null;
+        persist();
+        render();
       });
-      card.innerHTML = `
-        <div class="ex-header" style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none">
-          <span class="ex-chevron" style="color:var(--accent);transition:transform .15s">▶</span>
-          <div style="flex:1">
-            <div style="font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-              ${isDone ? '<span style="color:var(--success)">✓</span>' : ''}
-              <span>${ex.name}${ex.combinedName ? ' + ' + ex.combinedName : ''}</span>
-              ${techniqueBadge(ex.technique)}
-            </div>
-            <div class="text-muted" style="font-size:0.8rem;margin-top:2px">${ex.sets.length} séries · ${summarySets || '—'} · descanso ${restSec}s</div>
-          </div>
-        </div>
-        <div class="ex-body" style="display:none;margin-top:12px">
-          ${(ex.gifUrl || ex.videoUrl) ? mediaHtml(ex.gifUrl || ex.videoUrl) : ''}
-          ${ex.combinedMedia ? mediaHtml(ex.combinedMedia) : ''}
-          ${ex.technique && ex.technique !== 'normal' ? `<div class="card note" style="font-size:0.8rem;margin:8px 0">${
-            ex.technique === 'drop' ? '📉 <strong>Drop set:</strong> faça a série principal e reduza a carga nos drops sem descanso longo.' :
-            ex.technique === 'rest_pause' ? '⏱ <strong>Rest-pause:</strong> vá perto da falha, pause segundos e complete as mini-séries.' :
-            ex.technique === 'cluster' ? '🔹 <strong>Cluster:</strong> quebre as reps em blocos com pausa curta entre clusters.' :
-            ex.technique === 'combined' ? `🔗 <strong>Combinado:</strong> alterne com <em>${ex.combinedName || 'o 2º exercício'}</em> na mesma série.` : ''
-          }</div>` : ''}
-          <div class="form-group" style="margin-top:12px">
-            <label class="form-label">Dificuldade deste exercício</label>
-            <div class="diff-row">
-              <button type="button" class="btn btn-sm ${ex.difficulty==='facil'?'btn-primary':'btn-outline'} diff-btn" data-d="facil">Fácil</button>
-              <button type="button" class="btn btn-sm ${ex.difficulty==='moderado'?'btn-primary':'btn-outline'} diff-btn" data-d="moderado">Moderado</button>
-              <button type="button" class="btn btn-sm ${ex.difficulty==='intenso'?'btn-primary':'btn-outline'} diff-btn" data-d="intenso">Intenso</button>
-            </div>
-          </div>
-          <div style="display:flex;gap:8px;margin-bottom:6px;padding-left:36px;font-size:0.75rem;color:var(--muted);font-weight:600">
-            <div style="width:28px"></div>
-            <div style="flex:1">Reps</div>
-            <div style="flex:1">Kg</div>
-          </div>
-          <div class="sets-edit"></div>
-          ${started ? `
-          <div class="rest-timer-box" style="margin-top:12px;padding:10px;background:var(--elevated);border-radius:var(--radius-sm);text-align:center">
-            <div style="font-size:0.75rem;color:var(--muted)">Descanso</div>
-            <div class="rest-countdown" data-idx="${idx}" style="font-size:1.4rem;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums">${restSec}s</div>
-            <button type="button" class="btn btn-sm btn-outline btn-start-rest" data-idx="${idx}" style="margin-top:6px">Iniciar descanso (${restSec}s)</button>
-          </div>
-          <button type="button" class="btn btn-block ${isDone ? 'btn-outline' : 'btn-success'} btn-toggle-done" style="margin-top:12px">
-            ${isDone ? '↩ Refazer exercício' : '✓ Concluir exercício'}
-          </button>` : `<p class="text-muted" style="font-size:0.8rem;margin-top:8px">Inicie o treino para registrar séries e descanso.</p>`}
-        </div>
-      `;
-      list.appendChild(card);
+    }
 
-      const setsEl = card.querySelector('.sets-edit');
-      ex.sets.forEach((s, si) => {
+    // Séries do exercício em foco
+    if (focus) {
+      const setsEl = $('#focus-sets');
+      const setKey = (si) => `${focusIdx}_${si}`;
+      focus.sets.forEach((s, si) => {
+        const checked = !!session.setDone[setKey(si)];
         const wrap = document.createElement('div');
-        wrap.style.marginBottom = '10px';
-        const row = document.createElement('div');
-        row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:4px';
-        row.innerHTML = `
-          <div class="set-num">${si + 1}</div>
-          <div style="flex:1"><input type="number" class="form-input" data-field="reps" data-set="${si}" value="${s.reps}" min="0" inputmode="numeric" ${started?'':'disabled'}></div>
-          <div style="flex:1"><input type="number" class="form-input" data-field="weight" data-set="${si}" value="${s.weight}" min="0" step="0.5" inputmode="decimal" ${started?'':'disabled'}></div>
+        wrap.style.cssText = 'margin-bottom:10px';
+        wrap.innerHTML = `
+          <div style="display:flex;gap:8px;align-items:center">
+            <div class="set-num">${si + 1}</div>
+            <div style="flex:1"><input type="number" class="form-input" data-field="reps" data-set="${si}" value="${s.reps}" min="0" inputmode="numeric"></div>
+            <div style="flex:1"><input type="number" class="form-input" data-field="weight" data-set="${si}" value="${s.weight}" min="0" step="0.5" inputmode="decimal"></div>
+            <button type="button" class="set-check-btn ${checked ? 'done' : ''}" data-set="${si}" aria-label="Marcar série">${checked ? '✓' : '○'}</button>
+          </div>
         `;
-        wrap.appendChild(row);
         let hint = '';
-        if (ex.technique === 'drop' && s.drops?.length) {
-          hint = 'Drops: ' + s.drops.map(d => `${d.reps} reps @ ${d.weight || '?'} kg`).join(' → ');
-        } else if (ex.technique === 'rest_pause') {
-          hint = `Rest-pause: ${s.rpRounds || 3} mini-séries · pausa ${s.rpRest || 15}s`;
-        } else if (ex.technique === 'cluster') {
-          hint = `Cluster: ${s.clusterCount || 3} × ${s.clusterReps || 3} reps · pausa ${s.clusterRest || 15}s`;
-        } else if (ex.technique === 'combined' && ex.combinedName) {
-          hint = `Depois: ${ex.combinedName}`;
+        if (focus.technique === 'drop' && s.drops?.length) {
+          hint = 'Drops: ' + s.drops.map(d => `${d.reps} @ ${d.weight || '?'} kg`).join(' → ');
+        } else if (focus.technique === 'rest_pause') {
+          hint = `RP: ${s.rpRounds || 3} mini · pausa ${s.rpRest || 15}s`;
+        } else if (focus.technique === 'cluster') {
+          hint = `Cluster: ${s.clusterCount || 3}×${s.clusterReps || 3} · ${s.clusterRest || 15}s`;
+        } else if (focus.technique === 'combined' && focus.combinedName) {
+          hint = `Depois: ${focus.combinedName}`;
         }
         if (hint) {
           const h = document.createElement('div');
           h.className = 'text-muted';
-          h.style.cssText = 'font-size:0.75rem;padding-left:36px';
+          h.style.cssText = 'font-size:0.75rem;padding-left:44px;margin-top:2px';
           h.textContent = hint;
           wrap.appendChild(h);
         }
         setsEl.appendChild(wrap);
       });
 
-      const body = card.querySelector('.ex-body');
-      const chevron = card.querySelector('.ex-chevron');
-      card.querySelector('.ex-header').onclick = () => {
-        const open = body.style.display !== 'none';
-        body.style.display = open ? 'none' : 'block';
-        chevron.style.transform = open ? '' : 'rotate(90deg)';
-      };
-
-      card.querySelectorAll('.diff-btn').forEach(btn => {
-        btn.onclick = (e) => {
-          e.stopPropagation();
-          if (!started) return;
-          performed[idx].difficulty = btn.dataset.d;
+      setsEl.querySelectorAll('input[data-field]').forEach(inp => {
+        const apply = () => {
+          const si = +inp.dataset.set;
+          performed[focusIdx].sets[si][inp.dataset.field] = parseFloat(inp.value) || 0;
           persist();
-          card.querySelectorAll('.diff-btn').forEach(b => {
+        };
+        inp.addEventListener('change', apply);
+        inp.addEventListener('blur', apply);
+      });
+
+      setsEl.querySelectorAll('.set-check-btn').forEach(btn => {
+        btn.onclick = () => {
+          const si = +btn.dataset.set;
+          const k = setKey(si);
+          session.setDone[k] = !session.setDone[k];
+          persist();
+          btn.classList.toggle('done', !!session.setDone[k]);
+          btn.textContent = session.setDone[k] ? '✓' : '○';
+        };
+      });
+
+      $$('.diff-btn').forEach(btn => {
+        btn.onclick = () => {
+          performed[focusIdx].difficulty = btn.dataset.d;
+          persist();
+          $$('.diff-btn').forEach(b => {
             b.className = `btn btn-sm ${b.dataset.d === btn.dataset.d ? 'btn-primary' : 'btn-outline'} diff-btn`;
           });
         };
       });
 
-      card.querySelectorAll('input[data-field]').forEach(inp => {
-        const apply = () => {
-          const si = +inp.dataset.set;
-          performed[idx].sets[si][inp.dataset.field] = parseFloat(inp.value) || 0;
-          persist();
-          const sum = performed[idx].sets.map(s => `${s.reps}×${s.weight || 0}kg`).join(' · ');
-          const meta = card.querySelector('.text-muted');
-          if (meta) meta.textContent = `${performed[idx].sets.length} séries · ${sum} · descanso ${restSec}s`;
-        };
-        inp.addEventListener('input', apply);
-      });
-
-      card.querySelector('.btn-start-rest')?.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const sec = restSec;
-        session.restEndsAt = Date.now() + sec * 1000;
-        session.restExIdx = idx;
-        persist();
-        const cd = card.querySelector('.rest-countdown');
-        const btn = card.querySelector('.btn-start-rest');
-        const tickRest = () => {
-          const left = Math.max(0, Math.ceil((session.restEndsAt - Date.now()) / 1000));
-          if (cd) cd.textContent = left > 0 ? `${left}s` : 'Pronto!';
-          if (left <= 0) {
-            if (btn) btn.textContent = `Iniciar descanso (${sec}s)`;
-            session.restEndsAt = null;
-            persist();
-            return;
-          }
-          requestAnimationFrame(() => setTimeout(tickRest, 200));
-        };
-        if (btn) btn.textContent = 'Descansando...';
-        tickRest();
-      });
-
-      // resume rest countdown if active
-      if (session.restEndsAt && session.restExIdx === idx) {
-        const left = Math.ceil((session.restEndsAt - Date.now()) / 1000);
-        if (left > 0) {
-          const cd = card.querySelector('.rest-countdown');
-          const btn = card.querySelector('.btn-start-rest');
-          if (btn) btn.textContent = 'Descansando...';
-          const tickRest = () => {
-            const l = Math.max(0, Math.ceil((session.restEndsAt - Date.now()) / 1000));
-            if (cd) cd.textContent = l > 0 ? `${l}s` : 'Pronto!';
-            if (l <= 0) {
-              if (btn) btn.textContent = `Iniciar descanso (${restSec}s)`;
-              session.restEndsAt = null;
-              persist();
-              return;
-            }
-            setTimeout(tickRest, 250);
-          };
-          tickRest();
-        }
-      }
-
-      card.querySelector('.btn-toggle-done')?.addEventListener('click', (e) => {
-        e.stopPropagation();
-        doneMap[idx] = !doneMap[idx];
+      $('#btn-rest')?.addEventListener('click', () => {
+        session.restEndsAt = Date.now() + restSec * 1000;
+        session.restExIdx = focusIdx;
         persist();
         render();
       });
+
+      $('#btn-toggle-done')?.addEventListener('click', () => {
+        doneMap[focusIdx] = !doneMap[focusIdx];
+        if (doneMap[focusIdx]) {
+          // avança para o próximo incompleto
+          const next = firstIncomplete();
+          if (next !== focusIdx || !doneMap[next]) session.focusIdx = next;
+        }
+        persist();
+        render();
+      });
+    }
+
+    // Fila compacta
+    const queue = $('#wo-queue');
+    performed.forEach((ex, idx) => {
+      const isDone = !!doneMap[idx];
+      const isFocus = idx === focusIdx;
+      const row = el('div', {
+        class: 'wo-queue-item' + (isFocus ? ' active' : '') + (isDone ? ' done' : ''),
+        onClick: () => {
+          session.focusIdx = idx;
+          persist();
+          render();
+        }
+      }, [
+        el('span', { class: 'wo-q-check', text: isDone ? '✓' : String(idx + 1) }),
+        el('span', {
+          class: 'wo-q-name',
+          text: `${ex.name}${ex.combinedName ? ' + ' + ex.combinedName : ''}`
+        }),
+        isFocus ? el('span', { class: 'badge', style: 'background:var(--accent);color:#0f172a;font-size:0.65rem', text: 'FOCO' }) : null
+      ]);
+      queue.appendChild(row);
     });
 
-    $('#btn-start')?.addEventListener('click', () => {
-      session.started = true;
-      session.startedAt = Date.now();
-      persist();
-      render();
-    });
-
-    $('#btn-cancel')?.addEventListener('click', async () => {
-      if (!(await confirmDialog('Cancelar este treino? O progresso de hoje será apagado.'))) return;
-      stopTimers();
-      clearSession();
-      toast('Treino cancelado', 'success');
-      showStudentHome();
-    });
-
-    $('#btn-finish')?.addEventListener('click', async () => {
+    const doFinish = async () => {
       try {
         persist();
         const intensity = $('#intensity')?.value || 'moderada';
@@ -2925,11 +3012,21 @@ async function showStudentWorkout(workout, routine) {
         console.error(e);
         toast(e.message || 'Erro ao salvar treino', 'error');
       }
+    };
+
+    $('#btn-finish')?.addEventListener('click', doFinish);
+    $('#btn-cancel')?.addEventListener('click', async () => {
+      if (!(await confirmDialog('Cancelar este treino? O progresso de hoje será apagado.'))) return;
+      stopTimers();
+      clearSession();
+      toast('Treino cancelado', 'success');
+      showStudentHome();
     });
   };
 
   render();
 }
+
 
 
 async function renderFinanceiroTab(content) {
