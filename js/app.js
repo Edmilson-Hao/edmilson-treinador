@@ -2626,8 +2626,8 @@ async function showStudentWorkout(workout, routine) {
   }
   const doneMap = session.done || {};
   if (!session.setDone) session.setDone = {};
-  if (session.focusIdx == null || session.focusIdx < 0) session.focusIdx = 0;
-  if (session.focusIdx >= performed.length) session.focusIdx = Math.max(0, performed.length - 1);
+  if (session.focusIdx == null) session.focusIdx = 0;
+  if (session.focusIdx >= performed.length) session.focusIdx = Math.max(-1, performed.length - 1);
 
   const persist = () => {
     session.done = doneMap;
@@ -2656,7 +2656,7 @@ async function showStudentWorkout(workout, routine) {
     for (let i = 0; i < performed.length; i++) {
       if (!doneMap[i]) return i;
     }
-    return performed.length - 1;
+    return -1; // todos concluídos → nenhum em foco
   };
 
   const techniqueHint = (ex) => {
@@ -2675,8 +2675,16 @@ async function showStudentWorkout(workout, routine) {
     const started = !!session.started;
     const allDone = doneCount >= performed.length && performed.length > 0;
     const pct = Math.round((doneCount / total) * 100);
-    const focusIdx = Math.min(session.focusIdx || 0, Math.max(0, performed.length - 1));
-    const focus = performed[focusIdx];
+    let focusIdx = session.focusIdx;
+    if (focusIdx == null) focusIdx = 0;
+    // se o foco atual já está concluído e ainda há incompletos, não mantém o card aberto
+    if (focusIdx >= 0 && doneMap[focusIdx] && Object.values(doneMap).filter(Boolean).length < performed.length) {
+      const n = firstIncomplete();
+      focusIdx = n;
+      session.focusIdx = n;
+    }
+    if (focusIdx >= performed.length) focusIdx = firstIncomplete();
+    const focus = (focusIdx >= 0 && focusIdx < performed.length) ? performed[focusIdx] : null;
     const restSec = focus
       ? (Number(focus.restSeconds) || Number(focus.sets?.[0]?.rest) || 60)
       : 60;
@@ -2717,7 +2725,7 @@ async function showStudentWorkout(workout, routine) {
       $('#btn-start').onclick = () => {
         session.started = true;
         session.startedAt = Date.now();
-        session.focusIdx = firstIncomplete();
+        session.focusIdx = firstIncomplete() >= 0 ? firstIncomplete() : 0;
         persist();
         render();
       };
@@ -2948,9 +2956,12 @@ async function showStudentWorkout(workout, routine) {
       $('#btn-toggle-done')?.addEventListener('click', () => {
         doneMap[focusIdx] = !doneMap[focusIdx];
         if (doneMap[focusIdx]) {
-          // avança para o próximo incompleto
-          const next = firstIncomplete();
-          if (next !== focusIdx || !doneMap[next]) session.focusIdx = next;
+          // colapsa o concluído e abre o próximo incompleto (ou nenhum)
+          session.focusIdx = firstIncomplete();
+          toast('Exercício concluído', 'success');
+        } else {
+          // refazer: mantém este expandido
+          session.focusIdx = focusIdx;
         }
         persist();
         render();
