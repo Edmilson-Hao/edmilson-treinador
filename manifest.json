@@ -1,37 +1,25 @@
 {
-  "name": "Chinês SRS — Digitação",
-  "short_name": "Chinês SRS",
-  "description": "Treino de frases em chinês por digitação com SRS",
-  "start_url": "./index.html",
-  "scope": "./",
+  "name": "Edmilson Treinador",
+  "short_name": "Edmilson Treinador",
+  "description": "App de treinos personalizados - Edmilson Treinador",
+  "start_url": "./",
   "display": "standalone",
   "background_color": "#0f172a",
-  "theme_color": "#f59e0b",
-  "orientation": "any",
+  "theme_color": "#0f172a",
+  "orientation": "portrait",
+  "lang": "pt-BR",
   "icons": [
     {
-      "src": "icon-192.png",
+      "src": "assets/icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any"
+      "purpose": "any maskable"
     },
     {
-      "src": "icon-512.png",
+      "src": "assets/icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any"
-    },
-    {
-      "src": "icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "maskable"
-    },
-    {
-      "src": "icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any"
+      "purpose": "any maskable"
     }
   ]
 }
